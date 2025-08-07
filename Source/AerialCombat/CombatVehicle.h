@@ -4,23 +4,104 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Pawn.h"
+#include "CombatVehicle.generated.h"
 
-#include "PlayerVehicle.generated.h"
+// Network Prediction
+USTRUCT()
+struct FNetClientMove // Per Tick
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FVector Velocity = FVector();
+
+	UPROPERTY()
+	FVector Force = FVector();
+
+	UPROPERTY()
+	FVector Torque = FVector();
+
+	UPROPERTY()
+	FVector AngVelocity = FVector();
+
+	UPROPERTY()
+	FVector3d SetVelocityComp = FVector3d();
+
+	UPROPERTY()
+	bool bSetAngVelocity = false;
+};
+
+USTRUCT()
+struct FNetClientPredStats
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	TArray<FNetClientMove> MoveQueue;
+
+	UPROPERTY()
+	int MaxMovesInQueue = 16;
+
+public:
+	FNetClientPredStats() : MoveQueue()
+	{
+		MoveQueue.Reserve(MaxMovesInQueue);
+	}
+
+	bool IsMoveQueueEmpty()
+	{
+		return (MoveQueue.Num() == 0);
+	}
+
+	int GetNumOfMoves()
+	{
+		return MoveQueue.Num();
+	}
+
+	// Enqueue a Move
+	void AddMove(FNetClientMove& Move)
+	{
+		if (MoveQueue.Num() < MaxMovesInQueue)
+		{
+			MoveQueue.Add(Move);
+		}
+	}
+
+	// Dequeue Moves
+	FNetClientMove ExtractMove()
+	{
+		// Avoid Out-of-Bounds Error
+		if (IsMoveQueueEmpty())
+			return FNetClientMove();
+
+		FNetClientMove Move = MoveQueue[0];
+		MoveQueue.RemoveAt(0);
+		return Move;
+	}
+
+	// Update on Client-Side for Next Tick
+	// Must be called after Server RPC
+	void UpdateClient()
+	{
+		// Assume First Move Processed by Server
+		ExtractMove();
+	}
+};
 
 UCLASS()
-class AERIALCOMBAT_API APlayerVehicle : public APawn
+class AERIALCOMBAT_API ACombatVehicle : public APawn
 {
 	GENERATED_BODY()
 
 public:
 	// Sets default values for this pawn's properties
-	APlayerVehicle();
+	ACombatVehicle();
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle")
 	float AscentAcceleration = 200.0f;
-	
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle")
-	float MaxAscentVelocity= 250.0f;
+	float MaxAscentVelocity = 250.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle")
 	float DescentAcceleration = -100.0f;
@@ -35,7 +116,7 @@ public:
 	float MaxMovementVelocity = 500.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle")
-	float DecelerateLerpFactor = 10.0f;
+	float DecelerateFactor = 2.5f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle")
 	float TurningTorque = 20.0f;
@@ -56,21 +137,28 @@ public:
 
 
 	bool bShouldHover = false;
+
 	bool bMoving = false;
+	
 	bool bTurning = false;
+
+	bool bIsClient = false;
 
 	float GameGravity = 980.0f;
 
 	float HoverTime = 0.0f;
 	float MaxVelAchieved = 0.0f;
+	
+	// Network
+	FNetClientPredStats NetClientPredStats;
+	FNetClientMove CurrTickClientMove;
 
 protected:
 	// Called when the game starts or when spawned
 	virtual void BeginPlay() override;
 
-
 	// Component References
-	UStaticMeshComponent* MeshComp;
+	class UStaticMeshComponent* MeshComp;
 	class USpringArmComponent* SpringArmComp;
 
 private:
@@ -99,7 +187,6 @@ private:
 	UPROPERTY(EditDefaultsOnly, Category = "Input")
 	class UInputAction* TurnRightInputAction;
 
-
 public:	
 	// Called every frame
 	virtual void Tick(float DeltaTime) override;
@@ -108,7 +195,7 @@ public:
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 
 	// **
-	
+
 	// Input Functions
 	UFUNCTION()
 	void Look(const FInputActionValue& Value);
@@ -151,4 +238,10 @@ public:
 	// Decelerating Forward/Backward Movement and Rotation
 	UFUNCTION()
 	void Decelerate(float DeltaTime);
+
+	// RPC Calls
+
+	// Notify Server About Movement
+	UFUNCTION(Server, Unreliable)
+	void RPC_Server_UpdateMovement(FNetClientPredStats NetClientPredStatsParam);
 };
