@@ -14,6 +14,13 @@ ACombatVehicle::ACombatVehicle() : NetClientPredStats()
 {
  	// Set this pawn to call Tick() every frame.  You can turn this off to improve performance if you don't need it.
 	PrimaryActorTick.bCanEverTick = true;
+
+	// Setup Health
+	CurrentHealth = MaxHealth;
+
+	// Initialize Fire Rate
+	FireRate = 0.25f;
+	bIsShooting = false;
 }
 
 // Called when the game starts or when spawned
@@ -57,18 +64,18 @@ void ACombatVehicle::Tick(float DeltaTime)
 	{
 		Hover(DeltaTime);
 		Decelerate(DeltaTime);
-	}
 
-	// Enqueue the Resultant Move of this Tick
-	NetClientPredStats.AddMove(CurrTickClientMove);
-	if (!NetClientPredStats.IsMoveQueueEmpty())
-	{
-		RPC_Server_UpdateMovement(NetClientPredStats);
-		NetClientPredStats.UpdateClient();
-	}
+		// Enqueue the Resultant Move of this Tick
+		NetClientPredStats.AddMove(CurrTickClientMove);
+		if (!NetClientPredStats.IsMoveQueueEmpty())
+		{
+			RPC_Server_UpdateMovement(NetClientPredStats);
+			NetClientPredStats.UpdateClient();
+		}
 
-	// Prepare for the Next Tick
-	CurrTickClientMove = FNetClientMove();
+		// Prepare for the Next Tick
+		CurrTickClientMove = FNetClientMove();
+	}
 }
 
 // Called to bind functionality to input
@@ -100,6 +107,10 @@ void ACombatVehicle::SetupPlayerInputComponent(UInputComponent* PlayerInputCompo
 		EnhancedInputComponent->BindAction(TurnRightInputAction, ETriggerEvent::Triggered, this, &ACombatVehicle::TurnRight);
 		EnhancedInputComponent->BindAction(TurnLeftInputAction, ETriggerEvent::Completed, this, &ACombatVehicle::StopTurning);
 		EnhancedInputComponent->BindAction(TurnRightInputAction, ETriggerEvent::Completed, this, &ACombatVehicle::StopTurning);
+
+		// Shooting
+		EnhancedInputComponent->BindAction(FireInputAction, ETriggerEvent::Triggered, this, &ACombatVehicle::StartShooting);
+
 	}
 }
 
@@ -287,6 +298,85 @@ void ACombatVehicle::Decelerate(float DeltaTime)
 		FVector Torque = -MeshComp->GetPhysicsAngularVelocityInDegrees() * DecelerateFactor;
 		CurrTickClientMove.Torque += Torque;
 	}
+}
+
+void ACombatVehicle::OnHealthUpdate()
+{
+	// Client-side Actions
+	if (IsLocallyControlled())
+	{
+		FString HealthMessage = FString::Printf(TEXT("You now have %f health remaining."), CurrentHealth);
+		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Blue, HealthMessage);
+
+		if (CurrentHealth <= 0)
+		{
+			FString DeathMessage = FString::Printf(TEXT("You have been killed."));
+			GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Red, DeathMessage);
+		}
+	}
+
+	// Server-side Actions
+	if (HasAuthority())
+	{
+		FString HealthMessage = FString::Printf(TEXT("%s now has %f health remaining."), *GetFName().ToString(), CurrentHealth);
+		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Blue, HealthMessage);
+	}
+}
+
+void ACombatVehicle::SetCurrentHealth(float HealthValue)
+{
+	if (GetLocalRole() == ROLE_Authority)
+	{
+		CurrentHealth = FMath::Clamp(HealthValue, 0.0f, MaxHealth);
+		OnHealthUpdate();
+	}
+}
+
+float ACombatVehicle::TakeDamage(float DamageTaken, FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
+{
+	float DamageApplied = CurrentHealth - DamageTaken;
+	SetCurrentHealth(DamageApplied);
+	return DamageApplied;
+}
+
+void ACombatVehicle::StartShooting()
+{
+	if (!bIsShooting)
+	{
+		bIsShooting = true;
+		UWorld* World = GetWorld();
+		World->GetTimerManager().SetTimer(FiringTimer, this, &ACombatVehicle::StopShooting, FireRate, false);
+		RPC_Server_HandleShooting();
+	}
+}
+
+void ACombatVehicle::StopShooting()
+{
+	bIsShooting = false;
+}
+
+void ACombatVehicle::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	DOREPLIFETIME(ACombatVehicle, CurrentHealth);
+}
+
+void ACombatVehicle::OnRep_CurrentHealth()
+{
+	OnHealthUpdate();
+}
+
+void ACombatVehicle::RPC_Server_HandleShooting_Implementation()
+{
+	FVector SpawnLocation = GetActorLocation() + (GetActorRotation().Vector() * 100.0f) + (GetActorUpVector() * 50.0f);
+	FRotator SpawnRotation = GetActorRotation();
+
+	FActorSpawnParameters SpawnParameters;
+	SpawnParameters.Instigator = GetInstigator();
+	SpawnParameters.Owner = this;
+
+	AVehicleProjectile* SpawnedProjectile = GetWorld()->SpawnActor<AVehicleProjectile>(VehicleProjectile, SpawnLocation, SpawnRotation, SpawnParameters);
 }
 
 void ACombatVehicle::RPC_Server_UpdateMovement_Implementation(FNetClientPredStats NetClientPredStatsParam)

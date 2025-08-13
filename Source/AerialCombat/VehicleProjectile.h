@@ -1,0 +1,46 @@
+// Fill out your copyright notice in the Description page of Project Settings.
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "GameFramework/Actor.h"
+#include "VehicleProjectile.generated.h"
+
+UCLASS()
+class AERIALCOMBAT_API AVehicleProjectile : public AActor
+{
+	GENERATED_BODY()
+	
+public:	
+	// Sets default values for this actor's properties
+	AVehicleProjectile();
+
+	// Damage type and damage that will be done by this projectile
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Damage")
+	TSubclassOf<class UDamageType> DamageType;
+
+	// Damage dealt by this projectile.
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Damage")
+	float Damage;
+
+protected:
+	// Called when the game starts or when spawned
+	virtual void BeginPlay() override;
+
+	// Components
+	class USphereComponent* SphereComp;
+	class UStaticMeshComponent* StaticMesh;
+	class UProjectileMovementComponent* ProjectileMovementComponent;
+
+
+	// Actor Destroyed
+	virtual void Destroyed() override;
+
+	// Delegate called when SphereComponent begins Overlapping something
+	UFUNCTION(Category = "Projectile")
+	void OnProjectileBeginOverlap(UPrimitiveComponent* OverlappedComponent, AActor* OtherActor, UPrimitiveComponent* OtherComp, int32 OtherBodyIndex, bool bFromSweep, const FHitResult& SweepResult);
+
+public:	
+	// Called every frame
+	virtual void Tick(float DeltaTime) override;
+};

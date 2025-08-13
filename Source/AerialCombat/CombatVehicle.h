@@ -4,6 +4,10 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Pawn.h"
+
+// Projectile
+#include "VehicleProjectile.h"
+
 #include "CombatVehicle.generated.h"
 
 // Network Prediction
@@ -135,7 +139,30 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | HoverWobble")
 	float WobbleFrequency = 2.5f;
 
+	// Health
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Health")
+	float MaxHealth = 100.0f;
 
+	UPROPERTY(ReplicatedUsing = OnRep_CurrentHealth)
+	float CurrentHealth = 100.0f;
+
+	// Shooting Projectiles
+	UPROPERTY(EditDefaultsOnly, Category = "Vehicle | Shooting")
+	TSubclassOf<AVehicleProjectile> VehicleProjectile;
+
+	// Delay between shots in seconds. Used to control fire rate for your test projectile, 
+	// but also to prevent an overflow of server functions from binding SpawnProjectile directly to input.
+	UPROPERTY(EditDefaultsOnly, Category = "Gameplay")
+	float FireRate;
+	
+	// Timer to control FireRate
+	FTimerHandle FiringTimer;
+
+	// If true, you are in the process of firing projectiles
+	bool bIsShooting;
+
+	
+	
 	bool bShouldHover = false;
 
 	bool bMoving = false;
@@ -186,6 +213,10 @@ private:
 
 	UPROPERTY(EditDefaultsOnly, Category = "Input")
 	class UInputAction* TurnRightInputAction;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Input")
+	class UInputAction* FireInputAction;
+
 
 public:	
 	// Called every frame
@@ -239,9 +270,52 @@ public:
 	UFUNCTION()
 	void Decelerate(float DeltaTime);
 
+	// Health
+	//
+	void OnHealthUpdate();
+	
+	// Getters for Health variables
+	UFUNCTION(BlueprintPure, Category = "Vehicle | Health")
+	FORCEINLINE float GetMaxHealth() const { return MaxHealth; }
+
+	UFUNCTION(BlueprintPure, Category = "Vehicle | Health")
+	FORCEINLINE float GetCurrentHealth() const { return CurrentHealth; }
+
+	// Setter for Current Health. Clamps the value between 0 and MaxHealth and calls OnHealthUpdate. 
+	// Should only be called on the server.
+	UFUNCTION(BlueprintCallable, Category = "Vehicle | Health")
+	void SetCurrentHealth(float HealthValue);
+
+	// Event for taking damage. Overridden from APawn.
+	UFUNCTION(BlueprintCallable, Category = "Vehicle | Health")
+	float TakeDamage(float DamageTaken, struct FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser) override;
+
+
+	// Shooting
+	//
+	// Function for beginning weapon fire.
+	UFUNCTION()
+	void StartShooting();
+
+	// Function for ending weapon fire. Once this is called, the player can use StartFire again
+	UFUNCTION()
+	void StopShooting();
+
+
+	// Replication
+	void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
+	// Update Health
+	UFUNCTION()
+	void OnRep_CurrentHealth();
+
 	// RPC Calls
 
 	// Notify Server About Movement
 	UFUNCTION(Server, Unreliable)
 	void RPC_Server_UpdateMovement(FNetClientPredStats NetClientPredStatsParam);
+
+	// Notify Server About Shooting
+	UFUNCTION(Server, Unreliable)
+	void RPC_Server_HandleShooting();
 };
