@@ -8,6 +8,10 @@
 // Projectile
 #include "VehicleProjectile.h"
 
+// Niagara System
+#include "NiagaraFunctionLibrary.h"
+#include "NiagaraComponent.h"
+
 #include "CombatVehicle.generated.h"
 
 // Network
@@ -109,6 +113,18 @@ struct FNetClientVisuals
 	
 	UPROPERTY()
 	FVector JetFlameLeftScale;
+
+	UPROPERTY()
+	bool bActivateThrustOrBrakes = false;
+
+	UPROPERTY()
+	bool bMoveDirectionForward = false; // To be used with `bActivateThrustOrBrakes`
+
+	UPROPERTY()
+	bool bActivateTurningFlames = false;
+
+	UPROPERTY()
+	bool bTurnDirectionRight = false; // To be used with `bActivateTurningFlames`
 };
 
 
@@ -197,8 +213,10 @@ public:
 	bool bShouldHover = false;
 
 	bool bMoving = false;
-	
+	bool bMoveDirectionForward = false; // To be used with `bMoving`
+
 	bool bTurning = false;
+	bool bTurnDirectionRight = false; // To be used with `bTurning`
 
 	bool bIsClient = false;
 
@@ -220,7 +238,7 @@ protected:
 	class UStaticMeshComponent* MeshComp;
 	class USpringArmComponent* SpringArmComp;
 
-	// Jet Flame
+	// Jet Flame Visuals
 	class UStaticMeshComponent* JetFlameCenterMeshComp;
 	class UStaticMeshComponent* JetFlameRightMeshComp;
 	class UStaticMeshComponent* JetFlameLeftMeshComp;
@@ -230,6 +248,19 @@ protected:
 	FVector JetFlameRightPosition;
 	FVector JetFlameLeftScale;
 	FVector JetFlameLeftPosition;
+
+	// Thrust and Brake Flame Visuals
+	UNiagaraComponent* ThrusterFlameCenterNS;
+	UNiagaraComponent* ThrusterFlameLeftNS;
+	UNiagaraComponent* ThrusterFlameRightNS;
+
+	UNiagaraComponent* BrakeFlameCenterNS;
+	UNiagaraComponent* BrakeFlameLeftNS;
+	UNiagaraComponent* BrakeFlameRightNS;
+	
+	// Turning Flame Visuals
+	UNiagaraComponent* TurnLeftNS;
+	UNiagaraComponent* TurnRightNS;
 
 	// Light Ridge
 	UMaterialInstanceDynamic* LightRidgeMaterial;
@@ -321,6 +352,8 @@ public:
 	// Vehicle Visuals
 	void UpdateLightRidgeColor(float DeltaTime);
 	void UpdateJetFlameVisuals(float DeltaTime);
+	void SetThrustFlameVisuals();
+	void SetTurningFlameVisuals();
 
 	// Health
 	//

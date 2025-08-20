@@ -7,6 +7,7 @@
 #include "Components/InputComponent.h"
 #include "Camera/CameraComponent.h"
 #include "GameFramework/SpringArmComponent.h"
+
 #include <Net/UnrealNetwork.h>
 
 // Sets default values
@@ -50,12 +51,9 @@ void ACombatVehicle::BeginPlay()
 	JetFlameRightMeshComp = Cast<UStaticMeshComponent>(GetDefaultSubobjectByName("JetFlameV2_RimRight"));
 	JetFlameLeftMeshComp = Cast<UStaticMeshComponent>(GetDefaultSubobjectByName("JetFlameV2_RimLeft"));
 
-	if (JetFlameCenterMeshComp == nullptr)
-		GEngine->AddOnScreenDebugMessage(-1, 5.0f, FColor::Blue, TEXT("No Center JetFlame"));
-	if (JetFlameRightMeshComp == nullptr)
-		GEngine->AddOnScreenDebugMessage(-1, 5.0f, FColor::Blue, TEXT("No Right JetFlame"));
-	if (JetFlameLeftMeshComp == nullptr)
-		GEngine->AddOnScreenDebugMessage(-1, 5.0f, FColor::Blue, TEXT("No Left JetFlame"));
+	check(JetFlameCenterMeshComp != nullptr);
+	check(JetFlameRightMeshComp != nullptr);
+	check(JetFlameLeftMeshComp != nullptr)
 	
 	JetFlameCenterScale = JetFlameCenterMeshComp->GetRelativeScale3D();
 	JetFlameCenterPosition = JetFlameCenterMeshComp->GetRelativeLocation();
@@ -66,6 +64,29 @@ void ACombatVehicle::BeginPlay()
 	JetFlameLeftScale = JetFlameLeftMeshComp->GetRelativeScale3D();
 	JetFlameLeftPosition = JetFlameLeftMeshComp->GetRelativeLocation();
 
+	// Setup Thrust Flame Particles
+	ThrusterFlameCenterNS = Cast<UNiagaraComponent>(GetDefaultSubobjectByName("NS_ThrustFlame_Center"));
+	ThrusterFlameRightNS = Cast<UNiagaraComponent>(GetDefaultSubobjectByName("NS_ThrustFlame_Right"));
+	ThrusterFlameLeftNS = Cast<UNiagaraComponent>(GetDefaultSubobjectByName("NS_ThrustFlame_Left"));
+	
+	check(ThrusterFlameCenterNS != nullptr);
+	check(ThrusterFlameRightNS != nullptr);
+	check(ThrusterFlameLeftNS != nullptr);
+
+	BrakeFlameCenterNS = Cast<UNiagaraComponent>(GetDefaultSubobjectByName("NS_BrakeFlame_Center"));
+	BrakeFlameRightNS = Cast<UNiagaraComponent>(GetDefaultSubobjectByName("NS_BrakeFlame_Right"));
+	BrakeFlameLeftNS = Cast<UNiagaraComponent>(GetDefaultSubobjectByName("NS_BrakeFlame_Left"));
+
+	check(BrakeFlameCenterNS != nullptr);
+	check(BrakeFlameRightNS != nullptr);
+	check(BrakeFlameLeftNS != nullptr);
+
+	// Set Turning Flame Particles
+	TurnLeftNS = Cast<UNiagaraComponent>(GetDefaultSubobjectByName("NS_TurnLeft"));
+	TurnRightNS = Cast<UNiagaraComponent>(GetDefaultSubobjectByName("NS_TurnRight"));
+
+	check(TurnLeftNS != nullptr);
+	check(TurnRightNS != nullptr);
 
 	// Hovering
 	bShouldHover = false;
@@ -99,7 +120,8 @@ void ACombatVehicle::Tick(float DeltaTime)
 
 		UpdateLightRidgeColor(DeltaTime);
 		UpdateJetFlameVisuals(DeltaTime);
-
+		SetThrustFlameVisuals();
+		SetTurningFlameVisuals();
 
 		// Enqueue the Resultant Move of this Tick
 		NetClientPredStats.AddMove(CurrTickClientMove);
@@ -236,6 +258,7 @@ void ACombatVehicle::MoveForward(const FInputActionValue& Value)
 	}
 
 	bMoving = true;
+	bMoveDirectionForward = true;
 
 	/*GEngine->AddOnScreenDebugMessage(-1, 1.0f, FColor::Blue,
 		FString::Printf(TEXT("VelSq: %f"), GetVelocity().SquaredLength()));*/
@@ -262,6 +285,7 @@ void ACombatVehicle::MoveBackward(const FInputActionValue& Value)
 	}
 
 	bMoving = true;
+	bMoveDirectionForward = false;
 
 	/*GEngine->AddOnScreenDebugMessage(-1, 1.0f, FColor::Red,
 		FString::Printf(TEXT("VelSq: %f"), GetVelocity().SquaredLength()));*/
@@ -285,6 +309,7 @@ void ACombatVehicle::TurnLeft(const FInputActionValue& Value)
 	}
 
 	bTurning = true;
+	bTurnDirectionRight = false;
 }
 
 void ACombatVehicle::TurnRight(const FInputActionValue& Value)
@@ -300,6 +325,7 @@ void ACombatVehicle::TurnRight(const FInputActionValue& Value)
 	}
 
 	bTurning = true;
+	bTurnDirectionRight = true;
 }
 
 void ACombatVehicle::StopTurning(const FInputActionValue& Value)
@@ -388,6 +414,77 @@ void ACombatVehicle::UpdateJetFlameVisuals(float DeltaTime)
 	CurrTickClientVisuals.JetFlameLeftScale = NewScale;
 }
 
+void ACombatVehicle::SetThrustFlameVisuals()
+{
+	if (bMoving)
+	{
+		if (bMoveDirectionForward)
+		{
+			if (!ThrusterFlameCenterNS->IsActive()) // Just need to check one NS
+			{
+				ThrusterFlameCenterNS->Activate(true);
+				ThrusterFlameRightNS->Activate(true);
+				ThrusterFlameLeftNS->Activate(true);
+			}
+		}
+		else
+		{
+			if (!BrakeFlameCenterNS->IsActive())
+			{
+				BrakeFlameCenterNS->Activate(true);
+				BrakeFlameRightNS->Activate(true);
+				BrakeFlameLeftNS->Activate(true);
+			}
+		}
+	}
+	else
+	{
+		if (ThrusterFlameCenterNS->IsActive())
+		{
+			ThrusterFlameCenterNS->Deactivate();
+			ThrusterFlameRightNS->Deactivate();
+			ThrusterFlameLeftNS->Deactivate();
+		}
+		if (BrakeFlameCenterNS->IsActive())
+		{
+			BrakeFlameCenterNS->Deactivate();
+			BrakeFlameRightNS->Deactivate();
+			BrakeFlameLeftNS->Deactivate();
+		}
+	}
+
+	// Send to Network
+	CurrTickClientVisuals.bActivateThrustOrBrakes = bMoving;
+	CurrTickClientVisuals.bMoveDirectionForward = bMoveDirectionForward;
+}
+
+void ACombatVehicle::SetTurningFlameVisuals()
+{
+	if (bTurning)
+	{
+		if (bTurnDirectionRight)
+		{
+			if (!TurnRightNS->IsActive())
+				TurnRightNS->Activate(true);
+		}
+		else
+		{
+			if (!TurnLeftNS->IsActive())
+				TurnLeftNS->Activate(true);
+		}
+	}
+	else
+	{
+		if (TurnLeftNS->IsActive())
+			TurnLeftNS->Deactivate();
+		if (TurnRightNS->IsActive())
+			TurnRightNS->Deactivate();
+	}
+
+	CurrTickClientVisuals.bActivateTurningFlames = bTurning;
+	CurrTickClientVisuals.bTurnDirectionRight = bTurnDirectionRight;
+}
+
 void ACombatVehicle::OnHealthUpdate()
 {
 	// Client-side Actions
@@ -473,6 +570,16 @@ void ACombatVehicle::RPC_Multicast_UpdateVisuals_Implementation(FNetClientVisual
 
 	JetFlameLeftMeshComp->SetRelativeScale3D(NewVisuals.JetFlameLeftScale);
 	JetFlameLeftMeshComp->SetRelativeLocation(JetFlameLeftPosition);
+
+	// Update Thrust/Brake Flames
+	bMoving = NewVisuals.bActivateThrustOrBrakes;
+	bMoveDirectionForward = NewVisuals.bMoveDirectionForward;
+	SetThrustFlameVisuals();
+
+	// Update Turning Flames
+	bTurning = NewVisuals.bActivateTurningFlames;
+	bTurnDirectionRight = NewVisuals.bTurnDirectionRight;
+	SetTurningFlameVisuals();
 }
 
 void ACombatVehicle::RPC_Server_UpdateVisuals_Implementation(FNetClientVisuals NewVisuals)
