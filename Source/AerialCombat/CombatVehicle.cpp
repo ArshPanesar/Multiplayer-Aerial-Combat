@@ -45,9 +45,41 @@ void ACombatVehicle::BeginPlay()
 	check(SpringArmComp != nullptr);
 	SpringArmComp->bUsePawnControlRotation = true; // Rotate with Mouse
 
+	// Setup Jet Flame Mesh Refs (Hardcoded Names)
+	JetFlameCenterMeshComp = Cast<UStaticMeshComponent>(GetDefaultSubobjectByName("JetFlameV2_Center"));
+	JetFlameRightMeshComp = Cast<UStaticMeshComponent>(GetDefaultSubobjectByName("JetFlameV2_RimRight"));
+	JetFlameLeftMeshComp = Cast<UStaticMeshComponent>(GetDefaultSubobjectByName("JetFlameV2_RimLeft"));
+
+	if (JetFlameCenterMeshComp == nullptr)
+		GEngine->AddOnScreenDebugMessage(-1, 5.0f, FColor::Blue, TEXT("No Center JetFlame"));
+	if (JetFlameRightMeshComp == nullptr)
+		GEngine->AddOnScreenDebugMessage(-1, 5.0f, FColor::Blue, TEXT("No Right JetFlame"));
+	if (JetFlameLeftMeshComp == nullptr)
+		GEngine->AddOnScreenDebugMessage(-1, 5.0f, FColor::Blue, TEXT("No Left JetFlame"));
+	
+	JetFlameCenterScale = JetFlameCenterMeshComp->GetRelativeScale3D();
+	JetFlameCenterPosition = JetFlameCenterMeshComp->GetRelativeLocation();
+
+	JetFlameRightScale = JetFlameRightMeshComp->GetRelativeScale3D();
+	JetFlameRightPosition = JetFlameRightMeshComp->GetRelativeLocation();
+
+	JetFlameLeftScale = JetFlameLeftMeshComp->GetRelativeScale3D();
+	JetFlameLeftPosition = JetFlameLeftMeshComp->GetRelativeLocation();
+
+
+	// Hovering
 	bShouldHover = false;
 
 	HoverTime = 0.0f;
+
+	// Override the Light Ridge Material Instance
+	int32 LightRidgeMatIndex = 3; // HARDCODED MATERIAL INDEX
+	LightRidgeMaterial = UMaterialInstanceDynamic::Create(MeshComp->GetMaterial(LightRidgeMatIndex), this);
+	if (LightRidgeMaterial)
+	{
+		MeshComp->SetMaterial(LightRidgeMatIndex, LightRidgeMaterial);
+		CurrLightRidgeColor = LightRidgeColorStart;
+	}
 
 	// Network Check
 	bReplicates = true;
@@ -65,6 +97,10 @@ void ACombatVehicle::Tick(float DeltaTime)
 		Hover(DeltaTime);
 		Decelerate(DeltaTime);
 
+		UpdateLightRidgeColor(DeltaTime);
+		UpdateJetFlameVisuals(DeltaTime);
+
+
 		// Enqueue the Resultant Move of this Tick
 		NetClientPredStats.AddMove(CurrTickClientMove);
 		if (!NetClientPredStats.IsMoveQueueEmpty())
@@ -75,6 +111,9 @@ void ACombatVehicle::Tick(float DeltaTime)
 
 		// Prepare for the Next Tick
 		CurrTickClientMove = FNetClientMove();
+		
+		// Update Visuals on Remote Clients
+		RPC_Server_UpdateVisuals(CurrTickClientVisuals);
 	}
 }
 
@@ -300,6 +339,55 @@ void ACombatVehicle::Decelerate(float DeltaTime)
 	}
 }
 
+void ACombatVehicle::UpdateLightRidgeColor(float DeltaTime)
+{
+	// Lerp between Light Ridge Colors
+	LightRidgeLerpTimer += DeltaTime;
+
+	float LerpFactor = FMath::Abs(FMath::Sin(LightRidgeLerpTimer));
+	CurrLightRidgeColor = FMath::Lerp(LightRidgeColorStart, LightRidgeColorEnd, LerpFactor);
+	LightRidgeMaterial->SetVectorParameterValue("LightColor", CurrLightRidgeColor);
+
+	// Sync on all Instances
+	CurrTickClientVisuals.CurrLightRidgeColor = CurrLightRidgeColor;
+}
+
+void ACombatVehicle::UpdateJetFlameVisuals(float DeltaTime)
+{
+	float VelZ = GetVelocity().Z;
+
+	float ScaleMultiplier = 1.0f;
+	if (VelZ > 0.0f)
+	{
+		ScaleMultiplier += (VelZ / MaxAscentVelocity);
+	}
+	else
+	{
+		ScaleMultiplier -= (VelZ / MaxDescentVelocity);
+	}
+
+	FVector NewScale = JetFlameCenterScale;
+	NewScale.Z *= ScaleMultiplier;
+	JetFlameCenterMeshComp->SetRelativeScale3D(NewScale);
+	JetFlameCenterMeshComp->SetRelativeLocation(JetFlameCenterPosition);
+
+	CurrTickClientVisuals.JetFlameCenterScale = NewScale;
+
+	NewScale = JetFlameRightScale;
+	NewScale.Z *= ScaleMultiplier;
+	JetFlameRightMeshComp->SetRelativeScale3D(NewScale);
+	JetFlameRightMeshComp->SetRelativeLocation(JetFlameRightPosition);
+
+	CurrTickClientVisuals.JetFlameRightScale = NewScale;
+
+	NewScale = JetFlameLeftScale;
+	NewScale.Z *= ScaleMultiplier;
+	JetFlameLeftMeshComp->SetRelativeScale3D(NewScale);
+	JetFlameLeftMeshComp->SetRelativeLocation(JetFlameLeftPosition);
+
+	CurrTickClientVisuals.JetFlameLeftScale = NewScale;
+}
+
 void ACombatVehicle::OnHealthUpdate()
 {
 	// Client-side Actions
@@ -365,6 +453,31 @@ void ACombatVehicle::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLi
 void ACombatVehicle::OnRep_CurrentHealth()
 {
 	OnHealthUpdate();
+}
+
+void ACombatVehicle::RPC_Multicast_UpdateVisuals_Implementation(FNetClientVisuals NewVisuals)
+{
+	// Don't Run on Local Client
+	if (IsLocallyControlled())
+		return;
+
+	// Update Light Ridge
+	LightRidgeMaterial->SetVectorParameterValue("LightColor", NewVisuals.CurrLightRidgeColor);
+	
+	// Update Jet Flame
+	JetFlameCenterMeshComp->SetRelativeScale3D(NewVisuals.JetFlameCenterScale);
+	JetFlameCenterMeshComp->SetRelativeLocation(JetFlameCenterPosition);
+
+	JetFlameRightMeshComp->SetRelativeScale3D(NewVisuals.JetFlameRightScale);
+	JetFlameRightMeshComp->SetRelativeLocation(JetFlameRightPosition);
+
+	JetFlameLeftMeshComp->SetRelativeScale3D(NewVisuals.JetFlameLeftScale);
+	JetFlameLeftMeshComp->SetRelativeLocation(JetFlameLeftPosition);
+}
+
+void ACombatVehicle::RPC_Server_UpdateVisuals_Implementation(FNetClientVisuals NewVisuals)
+{
+	RPC_Multicast_UpdateVisuals(NewVisuals);
 }
 
 void ACombatVehicle::RPC_Server_HandleShooting_Implementation()

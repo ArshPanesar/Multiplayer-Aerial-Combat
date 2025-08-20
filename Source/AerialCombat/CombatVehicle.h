@@ -10,7 +10,7 @@
 
 #include "CombatVehicle.generated.h"
 
-// Network Prediction
+// Network
 USTRUCT()
 struct FNetClientMove // Per Tick
 {
@@ -92,6 +92,26 @@ public:
 	}
 };
 
+
+USTRUCT()
+struct FNetClientVisuals
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FLinearColor CurrLightRidgeColor;
+
+	UPROPERTY()
+	FVector JetFlameCenterScale;
+	
+	UPROPERTY()
+	FVector JetFlameRightScale;
+	
+	UPROPERTY()
+	FVector JetFlameLeftScale;
+};
+
+
 UCLASS()
 class AERIALCOMBAT_API ACombatVehicle : public APawn
 {
@@ -143,6 +163,17 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Health")
 	float MaxHealth = 100.0f;
 
+
+
+	// Light Ridge Colors
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Visuals")
+	FLinearColor LightRidgeColorStart = FColor::Blue;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Visuals")
+	FLinearColor LightRidgeColorEnd = FColor::Green;
+
+	FLinearColor CurrLightRidgeColor;
+
+
 	UPROPERTY(ReplicatedUsing = OnRep_CurrentHealth)
 	float CurrentHealth = 100.0f;
 
@@ -175,10 +206,11 @@ public:
 
 	float HoverTime = 0.0f;
 	float MaxVelAchieved = 0.0f;
-	
+
 	// Network
 	FNetClientPredStats NetClientPredStats;
 	FNetClientMove CurrTickClientMove;
+	FNetClientVisuals CurrTickClientVisuals;
 
 protected:
 	// Called when the game starts or when spawned
@@ -187,6 +219,21 @@ protected:
 	// Component References
 	class UStaticMeshComponent* MeshComp;
 	class USpringArmComponent* SpringArmComp;
+
+	// Jet Flame
+	class UStaticMeshComponent* JetFlameCenterMeshComp;
+	class UStaticMeshComponent* JetFlameRightMeshComp;
+	class UStaticMeshComponent* JetFlameLeftMeshComp;
+	FVector JetFlameCenterScale;
+	FVector JetFlameCenterPosition;
+	FVector JetFlameRightScale;
+	FVector JetFlameRightPosition;
+	FVector JetFlameLeftScale;
+	FVector JetFlameLeftPosition;
+
+	// Light Ridge
+	UMaterialInstanceDynamic* LightRidgeMaterial;
+	float LightRidgeLerpTimer = 0.0f;
 
 private:
 
@@ -270,6 +317,11 @@ public:
 	UFUNCTION()
 	void Decelerate(float DeltaTime);
 
+
+	// Vehicle Visuals
+	void UpdateLightRidgeColor(float DeltaTime);
+	void UpdateJetFlameVisuals(float DeltaTime);
+
 	// Health
 	//
 	void OnHealthUpdate();
@@ -318,4 +370,14 @@ public:
 	// Notify Server About Shooting
 	UFUNCTION(Server, Unreliable)
 	void RPC_Server_HandleShooting();
+
+	// Notify Everyone About Visuals
+	// Must be Called by CLIENT
+	UFUNCTION(Server, Unreliable)
+	void RPC_Server_UpdateVisuals(FNetClientVisuals NewVisuals);
+
+	// Notify Everyone About Visuals
+	// Must be Called by SERVER
+	UFUNCTION(NetMulticast, Unreliable)
+	void RPC_Multicast_UpdateVisuals(FNetClientVisuals NewVisuals);
 };
