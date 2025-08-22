@@ -8,6 +8,7 @@
 #include "GameFramework/DamageType.h"
 #include "Particles/ParticleSystem.h"
 #include <Kismet/GameplayStatics.h>
+#include <Net/UnrealNetwork.h>
 
 // Sets default values
 AVehicleProjectile::AVehicleProjectile()
@@ -35,6 +36,12 @@ void AVehicleProjectile::BeginPlay()
 	StaticMesh = FindComponentByClass<UStaticMeshComponent>();
 	check(StaticMesh != nullptr);
 
+	ProjectileMovementComponent = FindComponentByClass<UProjectileMovementComponent>();
+	check(ProjectileMovementComponent != nullptr);
+
+	InitialSpeed = ProjectileMovementComponent->InitialSpeed;
+	ProjectileMovementComponent->InitialSpeed = 0.0f;
+
 	// Register the Projectile Impact function on a Hit
 	if (HasAuthority())
 	{
@@ -59,10 +66,53 @@ void AVehicleProjectile::OnProjectileBeginOverlap(UPrimitiveComponent* Overlappe
 	}
 }
 
+void AVehicleProjectile::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
+{
+	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+
+	DOREPLIFETIME(AVehicleProjectile, MoveDirection);
+	DOREPLIFETIME(AVehicleProjectile, StartPosition);
+}
+
+void AVehicleProjectile::OnRep_MoveDirection()
+{
+	++RepCount;
+}
+
+void AVehicleProjectile::OnRep_StartPosition()
+{
+	++RepCount;
+}
+
 // Called every frame
 void AVehicleProjectile::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
+
+	// Initialize on Remote Non-Server Proxy
+	if (!bInitOnRemote)
+	{
+		if (RepCount >= RequiredRepCount)
+		{
+			bReplicationComplete = true;
+		}
+
+		// Wait for Movement Direction to be Replicated
+		if (ProjectileMovementComponent != nullptr && bReplicationComplete)
+		{
+			// Initialization Complete
+			bInitOnRemote = true;
+
+			SetDirection(MoveDirection);
+			SetActorLocation(StartPosition);
+		}
+	}
+}
+
+void AVehicleProjectile::SetDirection(FVector Direction)
+{
+	ProjectileMovementComponent->InitialSpeed = InitialSpeed;
+	ProjectileMovementComponent->Velocity = Direction * ProjectileMovementComponent->InitialSpeed;
 }
 

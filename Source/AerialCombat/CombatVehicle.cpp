@@ -30,8 +30,9 @@ void ACombatVehicle::BeginPlay()
 	Super::BeginPlay();
 
 	// Setup Enhanced Input
-	if (APlayerController* PlayerController = Cast<APlayerController>(Controller))
+	if (APlayerController* PlayerCont = Cast<APlayerController>(Controller))
 	{
+		PlayerController = PlayerCont;
 		if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PlayerController->GetLocalPlayer()))
 		{
 			Subsystem->AddMappingContext(InputMappingContext, 0);
@@ -45,6 +46,18 @@ void ACombatVehicle::BeginPlay()
 	SpringArmComp = FindComponentByClass<USpringArmComponent>();
 	check(SpringArmComp != nullptr);
 	SpringArmComp->bUsePawnControlRotation = true; // Rotate with Mouse
+
+	// Setup Refs to Cameras
+	VehicleCameraComp = Cast<UCameraComponent>(GetDefaultSubobjectByName("Camera"));
+	TurretCameraComp = Cast<UCameraComponent>(GetDefaultSubobjectByName("TurretCamera"));
+	check(TurretCameraComp != nullptr);
+	check(VehicleCameraComp != nullptr);
+
+	TurretMeshComp = Cast<UStaticMeshComponent>(GetDefaultSubobjectByName("Turret"));
+	if (TurretMeshComp == nullptr)
+	{
+		GEngine->AddOnScreenDebugMessage(-1, 5.0f, FColor::Red, TEXT("Turret not Found!"));
+	}
 
 	// Setup Jet Flame Mesh Refs (Hardcoded Names)
 	JetFlameCenterMeshComp = Cast<UStaticMeshComponent>(GetDefaultSubobjectByName("JetFlameV2_Center"));
@@ -123,6 +136,8 @@ void ACombatVehicle::Tick(float DeltaTime)
 		SetThrustFlameVisuals();
 		SetTurningFlameVisuals();
 
+		UpdateTurretOrientation();
+
 		// Enqueue the Resultant Move of this Tick
 		NetClientPredStats.AddMove(CurrTickClientMove);
 		if (!NetClientPredStats.IsMoveQueueEmpty())
@@ -169,6 +184,9 @@ void ACombatVehicle::SetupPlayerInputComponent(UInputComponent* PlayerInputCompo
 		EnhancedInputComponent->BindAction(TurnLeftInputAction, ETriggerEvent::Completed, this, &ACombatVehicle::StopTurning);
 		EnhancedInputComponent->BindAction(TurnRightInputAction, ETriggerEvent::Completed, this, &ACombatVehicle::StopTurning);
 
+		// Locking In
+		EnhancedInputComponent->BindAction(LockInInputAction, ETriggerEvent::Started, this, &ACombatVehicle::ToggleLockIn);
+		
 		// Shooting
 		EnhancedInputComponent->BindAction(FireInputAction, ETriggerEvent::Triggered, this, &ACombatVehicle::StartShooting);
 
@@ -485,6 +503,23 @@ void ACombatVehicle::SetTurningFlameVisuals()
 	CurrTickClientVisuals.bTurnDirectionRight = bTurnDirectionRight;
 }
 
+void ACombatVehicle::UpdateTurretOrientation()
+{
+	if (bIsLockedIn)
+	{
+		// Make Turret Follow LockedIn Camera Rotation
+		FRotator CorrectedTurretRotation = TurretCameraComp->GetComponentRotation();
+
+		CorrectedTurretRotation.Add(0.0f, -90.0f, 0.0f); // Correction for Turret Mesh (Offset by 90 degrees)
+		CorrectedTurretRotation.Roll = -CorrectedTurretRotation.Pitch;
+		CorrectedTurretRotation.Pitch = 0.0f;
+		TurretMeshComp->SetWorldRotation(CorrectedTurretRotation);
+
+		CurrTickClientVisuals.TurretRotation = CorrectedTurretRotation;
+	}
+	CurrTickClientVisuals.bIsLockedIn = bIsLockedIn;
+}
+
 void ACombatVehicle::OnHealthUpdate()
 {
 	// Client-side Actions
@@ -524,14 +559,54 @@ float ACombatVehicle::TakeDamage(float DamageTaken, FDamageEvent const& DamageEv
 	return DamageApplied;
 }
 
+void ACombatVehicle::ToggleLockIn()
+{
+	if (!bIsLockedIn)
+	{
+		TurretCameraComp->SetActive(true);
+		VehicleCameraComp->SetActive(false);
+		TurretMeshComp->SetVisibility(false);
+
+		// Limit Turret Camera Rotation
+		PlayerController->PlayerCameraManager->ViewPitchMin = TurretCameraPitchLimits.X;
+		PlayerController->PlayerCameraManager->ViewPitchMax = TurretCameraPitchLimits.Y;
+
+		bIsLockedIn = true;
+	}
+	else
+	{
+		TurretCameraComp->SetActive(false);
+		VehicleCameraComp->SetActive(true);
+		TurretMeshComp->SetVisibility(true);
+
+		// Free Normal Camera Rotation
+		PlayerController->PlayerCameraManager->ViewPitchMin = NormalCameraPitchLimits.X;
+		PlayerController->PlayerCameraManager->ViewPitchMax = NormalCameraPitchLimits.Y;
+
+		bIsLockedIn = false;
+	}
+}
+
 void ACombatVehicle::StartShooting()
 {
-	if (!bIsShooting)
+	if (!bIsShooting && bIsLockedIn)
 	{
 		bIsShooting = true;
-		UWorld* World = GetWorld();
-		World->GetTimerManager().SetTimer(FiringTimer, this, &ACombatVehicle::StopShooting, FireRate, false);
-		RPC_Server_HandleShooting();
+
+		GetWorld()->GetTimerManager().SetTimer(FiringTimer, this, &ACombatVehicle::StopShooting, FireRate, false);
+		
+		// Acquire Screen Center in World Position
+		FVector WorldPosition;
+		FVector WorldDirection;
+		int ScreenCenterX, ScreenCenterY;
+		PlayerController->GetViewportSize(ScreenCenterX, ScreenCenterY);
+		PlayerController->DeprojectScreenPositionToWorld((float)ScreenCenterX / 2.0f, (float)ScreenCenterY / 2.0f, WorldPosition, WorldDirection);
+		
+		// Offset Spawn Position
+		FVector SpawnPoint = WorldPosition - (TurretCameraComp->GetUpVector() * ProjectileSpawnOffsetDown);
+
+		// Ask Server to Spawn the Projectile
+		RPC_Server_HandleShooting(SpawnPoint, TurretCameraComp->GetForwardVector());
 	}
 }
 
@@ -580,6 +655,12 @@ void ACombatVehicle::RPC_Multicast_UpdateVisuals_Implementation(FNetClientVisual
 	bTurning = NewVisuals.bActivateTurningFlames;
 	bTurnDirectionRight = NewVisuals.bTurnDirectionRight;
 	SetTurningFlameVisuals();
+
+	// Update Turret Rotation
+	if (NewVisuals.bIsLockedIn)
+	{
+		TurretMeshComp->SetWorldRotation(NewVisuals.TurretRotation);
+	}
 }
 
 void ACombatVehicle::RPC_Server_UpdateVisuals_Implementation(FNetClientVisuals NewVisuals)
@@ -587,16 +668,19 @@ void ACombatVehicle::RPC_Server_UpdateVisuals_Implementation(FNetClientVisuals N
 	RPC_Multicast_UpdateVisuals(NewVisuals);
 }
 
-void ACombatVehicle::RPC_Server_HandleShooting_Implementation()
+void ACombatVehicle::RPC_Server_HandleShooting_Implementation(FVector SpawnPosition, FVector Direction)
 {
-	FVector SpawnLocation = GetActorLocation() + (GetActorRotation().Vector() * 100.0f) + (GetActorUpVector() * 50.0f);
-	FRotator SpawnRotation = GetActorRotation();
+	FVector SpawnLocation = SpawnPosition;
+	FRotator SpawnRotation = FRotator();
 
 	FActorSpawnParameters SpawnParameters;
 	SpawnParameters.Instigator = GetInstigator();
 	SpawnParameters.Owner = this;
 
 	AVehicleProjectile* SpawnedProjectile = GetWorld()->SpawnActor<AVehicleProjectile>(VehicleProjectile, SpawnLocation, SpawnRotation, SpawnParameters);
+	SpawnedProjectile->SetDirection(Direction);
+	SpawnedProjectile->MoveDirection = Direction;
+	SpawnedProjectile->StartPosition = SpawnPosition;
 }
 
 void ACombatVehicle::RPC_Server_UpdateMovement_Implementation(FNetClientPredStats NetClientPredStatsParam)

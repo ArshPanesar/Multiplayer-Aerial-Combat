@@ -23,6 +23,19 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Damage")
 	float Damage;
 
+	UPROPERTY(ReplicatedUsing = OnRep_MoveDirection)
+	FVector MoveDirection;
+
+	UPROPERTY(ReplicatedUsing = OnRep_StartPosition)
+	FVector StartPosition;
+	
+	float RepCount = 0;
+	float RequiredRepCount = 2;
+
+	float InitialSpeed;
+
+	bool bInitOnRemote = false;
+	bool bReplicationComplete = false;
 protected:
 	// Called when the game starts or when spawned
 	virtual void BeginPlay() override;
@@ -43,4 +56,17 @@ protected:
 public:	
 	// Called every frame
 	virtual void Tick(float DeltaTime) override;
+
+	void SetDirection(FVector Direction);
+
+	// Replication
+	void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	
+	UFUNCTION()
+	void OnRep_MoveDirection();
+
+	UFUNCTION()
+	void OnRep_StartPosition();
+
+
 };

@@ -103,6 +103,9 @@ struct FNetClientVisuals
 	GENERATED_BODY()
 
 	UPROPERTY()
+	FRotator TurretRotation = FRotator();
+
+	UPROPERTY()
 	FLinearColor CurrLightRidgeColor;
 
 	UPROPERTY()
@@ -125,6 +128,9 @@ struct FNetClientVisuals
 
 	UPROPERTY()
 	bool bTurnDirectionRight = false; // To be used with `bActivateTurningFlames`
+
+	UPROPERTY()
+	bool bIsLockedIn = false; // To be used with `bActivateTurningFlames`
 };
 
 
@@ -164,7 +170,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle")
 	float MaxTurningSpeed = 40.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Camera")
+	FVector2D NormalCameraPitchLimits = FVector2D(-90.0f, 90.0f);
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Camera")
+	FVector2D TurretCameraPitchLimits = FVector2D(-10.0f, 90.0f);
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | HoverWobble")
 	float WobbleAmplitude = 1.0f;
@@ -197,9 +207,12 @@ public:
 	UPROPERTY(EditDefaultsOnly, Category = "Vehicle | Shooting")
 	TSubclassOf<AVehicleProjectile> VehicleProjectile;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Shooting")
+	float ProjectileSpawnOffsetDown = 10.0f;
+
 	// Delay between shots in seconds. Used to control fire rate for your test projectile, 
 	// but also to prevent an overflow of server functions from binding SpawnProjectile directly to input.
-	UPROPERTY(EditDefaultsOnly, Category = "Gameplay")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Shooting")
 	float FireRate;
 	
 	// Timer to control FireRate
@@ -225,6 +238,9 @@ public:
 	float HoverTime = 0.0f;
 	float MaxVelAchieved = 0.0f;
 
+	// Locking In
+	bool bIsLockedIn = false;
+
 	// Network
 	FNetClientPredStats NetClientPredStats;
 	FNetClientMove CurrTickClientMove;
@@ -234,10 +250,18 @@ protected:
 	// Called when the game starts or when spawned
 	virtual void BeginPlay() override;
 
+	// Reference to Player Controller
+	APlayerController* PlayerController;
+
 	// Component References
 	class UStaticMeshComponent* MeshComp;
 	class USpringArmComponent* SpringArmComp;
-
+	class UCameraComponent* VehicleCameraComp;
+	
+	// Turret
+	class UCameraComponent* TurretCameraComp;
+	class UStaticMeshComponent* TurretMeshComp;
+	
 	// Jet Flame Visuals
 	class UStaticMeshComponent* JetFlameCenterMeshComp;
 	class UStaticMeshComponent* JetFlameRightMeshComp;
@@ -291,6 +315,9 @@ private:
 
 	UPROPERTY(EditDefaultsOnly, Category = "Input")
 	class UInputAction* TurnRightInputAction;
+
+	UPROPERTY(EditDefaultsOnly, Category = "Input")
+	class UInputAction* LockInInputAction;
 
 	UPROPERTY(EditDefaultsOnly, Category = "Input")
 	class UInputAction* FireInputAction;
@@ -355,6 +382,8 @@ public:
 	void SetThrustFlameVisuals();
 	void SetTurningFlameVisuals();
 
+	void UpdateTurretOrientation();
+
 	// Health
 	//
 	void OnHealthUpdate();
@@ -374,6 +403,13 @@ public:
 	// Event for taking damage. Overridden from APawn.
 	UFUNCTION(BlueprintCallable, Category = "Vehicle | Health")
 	float TakeDamage(float DamageTaken, struct FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser) override;
+
+	
+	// Locking In
+	//
+	// Lock into Turret to start Shooting / Get Out of Turret Cam
+	UFUNCTION()
+	void ToggleLockIn();
 
 
 	// Shooting
@@ -402,7 +438,7 @@ public:
 
 	// Notify Server About Shooting
 	UFUNCTION(Server, Unreliable)
-	void RPC_Server_HandleShooting();
+	void RPC_Server_HandleShooting(FVector SpawnPosition, FVector Direction);
 
 	// Notify Everyone About Visuals
 	// Must be Called by CLIENT
