@@ -221,8 +221,6 @@ public:
 	// If true, you are in the process of firing projectiles
 	bool bIsShooting;
 
-	
-	
 	bool bShouldHover = false;
 
 	bool bMoving = false;
@@ -249,9 +247,6 @@ public:
 protected:
 	// Called when the game starts or when spawned
 	virtual void BeginPlay() override;
-
-	// Reference to Player Controller
-	APlayerController* PlayerController;
 
 	// Component References
 	class UStaticMeshComponent* MeshComp;
@@ -449,4 +444,17 @@ public:
 	// Must be Called by SERVER
 	UFUNCTION(NetMulticast, Unreliable)
 	void RPC_Multicast_UpdateVisuals(FNetClientVisuals NewVisuals);
+
+	//
+	// Triggers for Blueprint Event
+	//
+
+	UFUNCTION(BlueprintImplementableEvent)
+	void UI_OnHealthUpdate(float Health);
+
+	UFUNCTION(BlueprintImplementableEvent)
+	void UI_SetLockedIn(bool bActivate);
+
+	UFUNCTION(BlueprintImplementableEvent)
+	void BP_PlayerDeath();
 };

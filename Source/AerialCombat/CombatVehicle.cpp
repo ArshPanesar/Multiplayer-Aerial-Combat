@@ -32,8 +32,7 @@ void ACombatVehicle::BeginPlay()
 	// Setup Enhanced Input
 	if (APlayerController* PlayerCont = Cast<APlayerController>(Controller))
 	{
-		PlayerController = PlayerCont;
-		if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PlayerController->GetLocalPlayer()))
+		if (UEnhancedInputLocalPlayerSubsystem* Subsystem = ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PlayerCont->GetLocalPlayer()))
 		{
 			Subsystem->AddMappingContext(InputMappingContext, 0);
 		}
@@ -114,6 +113,9 @@ void ACombatVehicle::BeginPlay()
 		MeshComp->SetMaterial(LightRidgeMatIndex, LightRidgeMaterial);
 		CurrLightRidgeColor = LightRidgeColorStart;
 	}
+
+	// Initialize Health for UI
+	UI_OnHealthUpdate(CurrentHealth);
 
 	// Network Check
 	bReplicates = true;
@@ -525,21 +527,17 @@ void ACombatVehicle::OnHealthUpdate()
 	// Client-side Actions
 	if (IsLocallyControlled())
 	{
-		FString HealthMessage = FString::Printf(TEXT("You now have %f health remaining."), CurrentHealth);
-		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Blue, HealthMessage);
-
-		if (CurrentHealth <= 0)
-		{
-			FString DeathMessage = FString::Printf(TEXT("You have been killed."));
-			GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Red, DeathMessage);
-		}
+		UI_OnHealthUpdate(CurrentHealth);
 	}
 
 	// Server-side Actions
 	if (HasAuthority())
 	{
-		FString HealthMessage = FString::Printf(TEXT("%s now has %f health remaining."), *GetFName().ToString(), CurrentHealth);
-		GEngine->AddOnScreenDebugMessage(-1, 5.f, FColor::Blue, HealthMessage);
+		if (CurrentHealth <= 0)
+		{
+			// Let the Blueprint Handle Death Scenario
+			BP_PlayerDeath();
+		}
 	}
 }
 
@@ -568,8 +566,12 @@ void ACombatVehicle::ToggleLockIn()
 		TurretMeshComp->SetVisibility(false);
 
 		// Limit Turret Camera Rotation
+		APlayerController* PlayerController = Cast<APlayerController>(GetController());
 		PlayerController->PlayerCameraManager->ViewPitchMin = TurretCameraPitchLimits.X;
 		PlayerController->PlayerCameraManager->ViewPitchMax = TurretCameraPitchLimits.Y;
+
+		// Blueprint Implemented
+		UI_SetLockedIn(true);
 
 		bIsLockedIn = true;
 	}
@@ -580,8 +582,12 @@ void ACombatVehicle::ToggleLockIn()
 		TurretMeshComp->SetVisibility(true);
 
 		// Free Normal Camera Rotation
+		APlayerController* PlayerController = Cast<APlayerController>(GetController());
 		PlayerController->PlayerCameraManager->ViewPitchMin = NormalCameraPitchLimits.X;
 		PlayerController->PlayerCameraManager->ViewPitchMax = NormalCameraPitchLimits.Y;
+
+		// Blueprint Implemented
+		UI_SetLockedIn(false);
 
 		bIsLockedIn = false;
 	}
@@ -599,6 +605,7 @@ void ACombatVehicle::StartShooting()
 		FVector WorldPosition;
 		FVector WorldDirection;
 		int ScreenCenterX, ScreenCenterY;
+		APlayerController* PlayerController = Cast<APlayerController>(GetController());
 		PlayerController->GetViewportSize(ScreenCenterX, ScreenCenterY);
 		PlayerController->DeprojectScreenPositionToWorld((float)ScreenCenterX / 2.0f, (float)ScreenCenterY / 2.0f, WorldPosition, WorldDirection);
 		
