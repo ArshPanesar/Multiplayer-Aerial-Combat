@@ -29,8 +29,15 @@ public:
 	UPROPERTY(ReplicatedUsing = OnRep_StartPosition)
 	FVector StartPosition;
 	
+	UPROPERTY(ReplicatedUsing = OnRep_AddVelocity)
+	FVector AddVelocity;
+
+	static FVector CurrentSpawnLocation; // To be Updated by Player
+	static FVector CurrentInstigatorVelocity; // To be Updated by Player
+	static FVector CurrentSpawnDirection; // To be Updated by Player
+
 	float RepCount = 0;
-	float RequiredRepCount = 2;
+	float RequiredRepCount = 3;
 
 	float InitialSpeed;
 
@@ -57,7 +64,8 @@ public:
 	// Called every frame
 	virtual void Tick(float DeltaTime) override;
 
-	void SetDirection(FVector Direction);
+	void SetDirection(FVector Direction, FVector AddVel = FVector());
+
 
 	// Replication
 	void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
@@ -68,5 +76,6 @@ public:
 	UFUNCTION()
 	void OnRep_StartPosition();
 
-
+	UFUNCTION()
+	void OnRep_AddVelocity();
 };

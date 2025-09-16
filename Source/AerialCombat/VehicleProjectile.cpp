@@ -10,6 +10,10 @@
 #include <Kismet/GameplayStatics.h>
 #include <Net/UnrealNetwork.h>
 
+FVector AVehicleProjectile::CurrentSpawnLocation = FVector();
+FVector AVehicleProjectile::CurrentInstigatorVelocity = FVector();
+FVector AVehicleProjectile::CurrentSpawnDirection = FVector();
+
 // Sets default values
 AVehicleProjectile::AVehicleProjectile()
 {
@@ -72,6 +76,7 @@ void AVehicleProjectile::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& O
 
 	DOREPLIFETIME(AVehicleProjectile, MoveDirection);
 	DOREPLIFETIME(AVehicleProjectile, StartPosition);
+	DOREPLIFETIME(AVehicleProjectile, AddVelocity);
 }
 
 void AVehicleProjectile::OnRep_MoveDirection()
@@ -84,6 +89,11 @@ void AVehicleProjectile::OnRep_StartPosition()
 	++RepCount;
 }
 
+void AVehicleProjectile::OnRep_AddVelocity()
+{
+	++RepCount;
+}
+
 // Called every frame
 void AVehicleProjectile::Tick(float DeltaTime)
 {
@@ -91,28 +101,35 @@ void AVehicleProjectile::Tick(float DeltaTime)
 
 
 	// Initialize on Remote Non-Server Proxy
-	if (!bInitOnRemote)
+	if (!HasAuthority())
 	{
-		if (RepCount >= RequiredRepCount)
+		if (!bInitOnRemote)
 		{
-			bReplicationComplete = true;
-		}
+			if (RepCount >= RequiredRepCount)
+			{
+				bReplicationComplete = true;
+			}
 
-		// Wait for Movement Direction to be Replicated
-		if (ProjectileMovementComponent != nullptr && bReplicationComplete)
-		{
-			// Initialization Complete
-			bInitOnRemote = true;
+			// Wait for Movement Direction to be Replicated
+			if (ProjectileMovementComponent != nullptr && bReplicationComplete)
+			{
+				// Initialization Complete
+				bInitOnRemote = true;
 
-			SetDirection(MoveDirection);
-			SetActorLocation(StartPosition);
+				SetDirection(MoveDirection, AddVelocity);
+
+				// Directly Ask for Spawn Position from Combat Vehicle
+				SetActorLocation(StartPosition);
+			}
 		}
 	}
+
 }
 
-void AVehicleProjectile::SetDirection(FVector Direction)
+void AVehicleProjectile::SetDirection(FVector Direction, FVector AddVel)
 {
 	ProjectileMovementComponent->InitialSpeed = InitialSpeed;
 	ProjectileMovementComponent->Velocity = Direction * ProjectileMovementComponent->InitialSpeed;
+	ProjectileMovementComponent->Velocity += AddVel;
 }
 

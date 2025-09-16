@@ -5,8 +5,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Pawn.h"
 
-// Projectile
-#include "VehicleProjectile.h"
+#include "ACPlayerState.h"
 
 // Niagara System
 #include "NiagaraFunctionLibrary.h"
@@ -34,6 +33,9 @@ struct FNetClientMove // Per Tick
 
 	UPROPERTY()
 	FVector3d SetVelocityComp = FVector3d();
+
+	UPROPERTY()
+	FRotator Rotation = FRotator();
 
 	UPROPERTY()
 	bool bSetAngVelocity = false;
@@ -130,12 +132,15 @@ struct FNetClientVisuals
 	bool bTurnDirectionRight = false; // To be used with `bActivateTurningFlames`
 
 	UPROPERTY()
-	bool bIsLockedIn = false; // To be used with `bActivateTurningFlames`
+	bool bIsLockedIn = false;
+	
+	UPROPERTY()
+	bool bBoostModeActive = false;
 };
 
 
 UCLASS()
-class AERIALCOMBAT_API ACombatVehicle : public APawn
+class AERIALCOMBAT_API ACombatVehicle : public APawn, public IAbilitySystemInterface
 {
 	GENERATED_BODY()
 
@@ -160,6 +165,24 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle")
 	float MaxMovementVelocity = 500.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle")
+	float BoostModeAcceleration = 2500.0f;
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle")
+	float BoostModeMaxVelocity = 5000.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle")
+	float BoostPitchAngleDegrees = 15.0f;
+	
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle")
+	float BoostRollAngleDegrees = 5.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle")
+	float BoostRotationSpeed = 10.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle")
+	float BoostReturnZeroPitchSpeed = 1.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle")
 	float DecelerateFactor = 2.5f;
@@ -189,23 +212,45 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Health")
 	float MaxHealth = 100.0f;
 
-
+	// Thrust Visuals
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Visuals")
+	FLinearColor NSThrustNormalColor = FColor::Blue;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Visuals")
+	FLinearColor NSThrustBoostColor = FColor::Blue;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Visuals")
+	float NSThrustNormalSpawnRate = 750.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Visuals")
+	float NSThrustBoostSpawnRate = 1500.0f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Visuals")
+	float NSThrustNormalLifeTime = 0.5f;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Visuals")
+	float NSThrustBoostLifeTime = 1.5f;
 
 	// Light Ridge Colors
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Visuals")
 	FLinearColor LightRidgeColorStart = FColor::Blue;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Visuals")
 	FLinearColor LightRidgeColorEnd = FColor::Green;
-
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Visuals")
+	FLinearColor LightRidgeLockInColor = FColor::Red;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Visuals")
+	float LightRidgeLockInFadeFactor = 1.0f;
+	
 	FLinearColor CurrLightRidgeColor;
+	FLinearColor ActiveLightRidgeColor;
+	float LightRidgeLockInTimer = 0.0f;
+
+	// Post Process
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Visuals")
+	float SpeedLinesFadeFactor = 1.0f;
+
+	// Speed Trails
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Visuals")
+	float SpeedTrailStopTime = 2.0f;
 
 
 	UPROPERTY(ReplicatedUsing = OnRep_CurrentHealth)
 	float CurrentHealth = 100.0f;
-
-	// Shooting Projectiles
-	UPROPERTY(EditDefaultsOnly, Category = "Vehicle | Shooting")
-	TSubclassOf<AVehicleProjectile> VehicleProjectile;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Shooting")
 	float ProjectileSpawnOffsetDown = 10.0f;
@@ -222,9 +267,14 @@ public:
 	bool bIsShooting;
 
 	bool bShouldHover = false;
+	bool bAscending = false;
+	bool bDescending = false;
 
 	bool bMoving = false;
 	bool bMoveDirectionForward = false; // To be used with `bMoving`
+
+	bool bBoostActive = false;
+	bool bSetThrustToBoostMode = false;
 
 	bool bTurning = false;
 	bool bTurnDirectionRight = false; // To be used with `bTurning`
@@ -236,8 +286,22 @@ public:
 	float HoverTime = 0.0f;
 	float MaxVelAchieved = 0.0f;
 
+	float BoostModeLastPitchAchieved = 0.0f;
+	float BoostModeLastRollAchieved = 0.0f;
+	float BoostModeZeroPitchTimer = 0.0f;
+	float BoostModeZeroRollTimer = 0.0f;
+
 	// Locking In
 	bool bIsLockedIn = false;
+
+	// Post Process Material
+	UMaterialInstanceDynamic* SpeedLinesMaterial;
+	float SpeedLinesLastWeight = 0.0f;
+	float SpeedLinesFadeTimer = 0.0f;
+
+	// Speed Trail Timer
+	FTimerHandle SpeedTrailTimer;
+	bool bSpeedTrailTimerSet = false;
 
 	// Network
 	FNetClientPredStats NetClientPredStats;
@@ -285,6 +349,13 @@ protected:
 	UMaterialInstanceDynamic* LightRidgeMaterial;
 	float LightRidgeLerpTimer = 0.0f;
 
+	// Speed Trail Visuals
+	UNiagaraComponent* SpeedTrailLeftNS;
+	UNiagaraComponent* SpeedTrailRightNS;
+
+	// ASC (Initialized by ACPlayerState)
+	UCVAbilitySystemComponent* AbilitySystemComp;
+
 private:
 
 	UPROPERTY(EditDefaultsOnly, Category = "Input")
@@ -317,6 +388,8 @@ private:
 	UPROPERTY(EditDefaultsOnly, Category = "Input")
 	class UInputAction* FireInputAction;
 
+	UPROPERTY(EditDefaultsOnly, Category = "Input")
+	class UInputAction* BoostInputAction;
 
 public:	
 	// Called every frame
@@ -325,7 +398,14 @@ public:
 	// Called to bind functionality to input
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 
-	// **
+	// PossessedBy Called on Server
+	virtual void PossessedBy(AController* NewController) override;
+	// OnRep_PlayerState Called on Client
+	virtual void OnRep_PlayerState() override;
+
+	virtual UCVAbilitySystemComponent* GetAbilitySystemComponent() const override;
+
+	// 
 
 	// Input Functions
 	UFUNCTION()
@@ -361,6 +441,9 @@ public:
 	UFUNCTION()
 	void StopTurning(const FInputActionValue& Value);
 
+	UFUNCTION()
+	void ActivateBoost(const FInputActionValue& Value);
+
 
 	// Hovering
 	UFUNCTION()
@@ -370,12 +453,16 @@ public:
 	UFUNCTION()
 	void Decelerate(float DeltaTime);
 
+	// Boost Mode
+	void UpdateBoostMode(float DeltaTime);
 
 	// Vehicle Visuals
 	void UpdateLightRidgeColor(float DeltaTime);
 	void UpdateJetFlameVisuals(float DeltaTime);
 	void SetThrustFlameVisuals();
 	void SetTurningFlameVisuals();
+	void SetSpeedTrailVisuals();
+	void StopSpeedTrailVisuals(); // Called by Timer
 
 	void UpdateTurretOrientation();
 
@@ -432,8 +519,8 @@ public:
 	void RPC_Server_UpdateMovement(FNetClientPredStats NetClientPredStatsParam);
 
 	// Notify Server About Shooting
-	UFUNCTION(Server, Unreliable)
-	void RPC_Server_HandleShooting(FVector SpawnPosition, FVector Direction);
+	/*UFUNCTION(Server, Unreliable)
+	void RPC_Server_HandleShooting(FVector SpawnPosition, FVector Direction);*/
 
 	// Notify Everyone About Visuals
 	// Must be Called by CLIENT

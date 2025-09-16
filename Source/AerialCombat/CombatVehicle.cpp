@@ -7,6 +7,8 @@
 #include "Components/InputComponent.h"
 #include "Camera/CameraComponent.h"
 #include "GameFramework/SpringArmComponent.h"
+#include "GameFramework/PlayerState.h"
+#include "AbilitySystemComponent.h"
 
 #include <Net/UnrealNetwork.h>
 
@@ -65,8 +67,8 @@ void ACombatVehicle::BeginPlay()
 
 	check(JetFlameCenterMeshComp != nullptr);
 	check(JetFlameRightMeshComp != nullptr);
-	check(JetFlameLeftMeshComp != nullptr)
-	
+	check(JetFlameLeftMeshComp != nullptr);
+
 	JetFlameCenterScale = JetFlameCenterMeshComp->GetRelativeScale3D();
 	JetFlameCenterPosition = JetFlameCenterMeshComp->GetRelativeLocation();
 
@@ -80,7 +82,7 @@ void ACombatVehicle::BeginPlay()
 	ThrusterFlameCenterNS = Cast<UNiagaraComponent>(GetDefaultSubobjectByName("NS_ThrustFlame_Center"));
 	ThrusterFlameRightNS = Cast<UNiagaraComponent>(GetDefaultSubobjectByName("NS_ThrustFlame_Right"));
 	ThrusterFlameLeftNS = Cast<UNiagaraComponent>(GetDefaultSubobjectByName("NS_ThrustFlame_Left"));
-	
+
 	check(ThrusterFlameCenterNS != nullptr);
 	check(ThrusterFlameRightNS != nullptr);
 	check(ThrusterFlameLeftNS != nullptr);
@@ -100,6 +102,13 @@ void ACombatVehicle::BeginPlay()
 	check(TurnLeftNS != nullptr);
 	check(TurnRightNS != nullptr);
 
+	// Set Speed Trail Particles
+	SpeedTrailLeftNS = Cast<UNiagaraComponent>(GetDefaultSubobjectByName("NS_LeftSpeedTrail"));
+	SpeedTrailRightNS = Cast<UNiagaraComponent>(GetDefaultSubobjectByName("NS_RightSpeedTrail"));
+
+	check(SpeedTrailLeftNS != nullptr);
+	check(SpeedTrailRightNS != nullptr);
+
 	// Hovering
 	bShouldHover = false;
 
@@ -112,6 +121,17 @@ void ACombatVehicle::BeginPlay()
 	{
 		MeshComp->SetMaterial(LightRidgeMatIndex, LightRidgeMaterial);
 		CurrLightRidgeColor = LightRidgeColorStart;
+	}
+
+	// Initialize Camera Post-Process Materials
+	UMaterialInterface* SpeedLinesMaterialInterface = Cast<UMaterialInterface>(StaticLoadObject(UMaterial::StaticClass(), nullptr, TEXT("/Game/Models/PostProcess/M_PP_SpeedLines.M_PP_SpeedLines")));
+	SpeedLinesMaterial = UMaterialInstanceDynamic::Create(SpeedLinesMaterialInterface, this);
+	if (SpeedLinesMaterial)
+	{
+		SpeedLinesMaterial->SetScalarParameterValue("Alpha", 0.0f);
+
+		// Add to Camera Post-Processing
+		VehicleCameraComp->PostProcessSettings.AddBlendable(SpeedLinesMaterial, 1.0f);
 	}
 
 	// Initialize Health for UI
@@ -130,6 +150,7 @@ void ACombatVehicle::Tick(float DeltaTime)
 	// Perform Physics Locally
 	if (IsLocallyControlled())
 	{
+		UpdateBoostMode(DeltaTime);
 		Hover(DeltaTime);
 		Decelerate(DeltaTime);
 
@@ -137,6 +158,7 @@ void ACombatVehicle::Tick(float DeltaTime)
 		UpdateJetFlameVisuals(DeltaTime);
 		SetThrustFlameVisuals();
 		SetTurningFlameVisuals();
+		SetSpeedTrailVisuals();
 
 		UpdateTurretOrientation();
 
@@ -150,7 +172,7 @@ void ACombatVehicle::Tick(float DeltaTime)
 
 		// Prepare for the Next Tick
 		CurrTickClientMove = FNetClientMove();
-		
+
 		// Update Visuals on Remote Clients
 		RPC_Server_UpdateVisuals(CurrTickClientVisuals);
 	}
@@ -192,9 +214,44 @@ void ACombatVehicle::SetupPlayerInputComponent(UInputComponent* PlayerInputCompo
 		// Shooting
 		EnhancedInputComponent->BindAction(FireInputAction, ETriggerEvent::Triggered, this, &ACombatVehicle::StartShooting);
 
+		// Boost Mode
+		EnhancedInputComponent->BindAction(BoostInputAction, ETriggerEvent::Triggered, this, &ACombatVehicle::ActivateBoost);
 	}
 }
 
+void ACombatVehicle::PossessedBy(AController* NewController)
+{
+	Super::PossessedBy(NewController);
+
+	SetOwner(NewController);
+
+	AACPlayerState* PS = GetPlayerState<AACPlayerState>();
+	if (PS)
+	{
+		AbilitySystemComp = Cast<UCVAbilitySystemComponent>(PS->AbilitySystemComponent);
+		AbilitySystemComp->InitAbilityActorInfo(PS, this);
+	}
+}
+
+void ACombatVehicle::OnRep_PlayerState()
+{
+	Super::OnRep_PlayerState();
+
+	AACPlayerState* PS = GetPlayerState<AACPlayerState>();
+	if (PS)
+	{
+		// Set the ASC for clients. Server does this in PossessedBy.
+		AbilitySystemComp = Cast<UCVAbilitySystemComponent>(PS->AbilitySystemComponent);
+
+		// Init ASC Actor Info for clients. Server will init its ASC when it possesses a new Actor.
+		AbilitySystemComp->InitAbilityActorInfo(PS, this);
+	}
+}
+
+UCVAbilitySystemComponent* ACombatVehicle::GetAbilitySystemComponent() const
+{
+	return AbilitySystemComp;
+}
 
 void ACombatVehicle::Look(const FInputActionValue& Value)
 {
@@ -218,6 +275,8 @@ void ACombatVehicle::Ascend(const FInputActionValue& Value)
 	{
 		CurrTickClientMove.Force += FVector(0.0f, 0.0f, GameGravity + AscentAcceleration);
 	}
+
+	bAscending = true;
 	bShouldHover = false;
 
 	//GEngine->AddOnScreenDebugMessage(-1, 1.0f, FColor::Red,
@@ -227,6 +286,7 @@ void ACombatVehicle::Ascend(const FInputActionValue& Value)
 void ACombatVehicle::StopAscending(const FInputActionValue& Value)
 {
 	bShouldHover = true;
+	bAscending = false;
 	MaxVelAchieved = GetVelocity().Z;
 	HoverTime = 0.0f;
 }
@@ -243,7 +303,7 @@ void ACombatVehicle::Descend(const FInputActionValue& Value)
 		CurrTickClientMove.Force += FVector(0.0f, 0.0f, GameGravity + DescentAcceleration);
 	}
 	bShouldHover = false;
-
+	bDescending = true;
 
 	/*GEngine->AddOnScreenDebugMessage(-1, 1.0f, FColor::Blue,
 		FString::Printf(TEXT("ZVel: %f , Height: %f"), GetVelocity().Z, GetActorLocation().Z));*/
@@ -253,6 +313,7 @@ void ACombatVehicle::Descend(const FInputActionValue& Value)
 void ACombatVehicle::StopDescending(const FInputActionValue& Value)
 {
 	bShouldHover = true;
+	bDescending = false;
 	MaxVelAchieved = GetVelocity().Z;
 	HoverTime = 0.0f;
 }
@@ -262,9 +323,12 @@ void ACombatVehicle::MoveForward(const FInputActionValue& Value)
 	// Clamp Velocity
 	FVector Vel(GetVelocity());
 	Vel.Z = 0.0f;
-	if (Vel.SquaredLength() > MaxMovementVelocity * MaxMovementVelocity && Vel.Dot(GetActorForwardVector()) > 0.0f)
+
+	float UseMaxVel = bBoostActive ? BoostModeMaxVelocity : MaxMovementVelocity;
+	float UseAcc = bBoostActive ? BoostModeAcceleration : MovementAcceleration;
+	if (Vel.SquaredLength() > UseMaxVel * UseMaxVel && Vel.Dot(GetActorForwardVector()) > 0.0f)
 	{
-		Vel = MaxMovementVelocity * GetActorForwardVector();
+		Vel = UseMaxVel * GetActorForwardVector();
 		CurrTickClientMove.Velocity.X = Vel.X;
 		CurrTickClientMove.Velocity.Y = Vel.Y;
 		CurrTickClientMove.SetVelocityComp.X = 1;
@@ -273,7 +337,7 @@ void ACombatVehicle::MoveForward(const FInputActionValue& Value)
 	else
 	{
 		// Apply Acceleration
-		FVector Acc = MovementAcceleration * GetActorForwardVector();
+		FVector Acc = UseAcc * GetActorForwardVector();
 		CurrTickClientMove.Force += Acc;
 	}
 
@@ -314,6 +378,7 @@ void ACombatVehicle::MoveBackward(const FInputActionValue& Value)
 void ACombatVehicle::StopMoving(const FInputActionValue& Value)
 {
 	bMoving = false;
+	bBoostActive = false;
 }
 
 void ACombatVehicle::TurnLeft(const FInputActionValue& Value)
@@ -353,6 +418,14 @@ void ACombatVehicle::StopTurning(const FInputActionValue& Value)
 	bTurning = false;
 }
 
+void ACombatVehicle::ActivateBoost(const FInputActionValue& Value)
+{
+	if (bMoving && bMoveDirectionForward)
+	{
+		bBoostActive = true;
+	}
+}
+
 void ACombatVehicle::Hover(float DeltaTime)
 {
 	if (bShouldHover)
@@ -385,13 +458,114 @@ void ACombatVehicle::Decelerate(float DeltaTime)
 	}
 }
 
+void ACombatVehicle::UpdateBoostMode(float DeltaTime)
+{
+	bool bReturnZeroPitch = true;
+	bool bReturnZeroRoll = true;
+	if (bBoostActive)
+	{
+		// Change Pitch
+		bReturnZeroPitch = !(bAscending || bDescending);
+		BoostModeZeroPitchTimer = (bReturnZeroPitch) ? BoostModeZeroPitchTimer : 0.0f;
+		
+		FRotator Rotation = GetActorRotation();
+		if (bAscending)
+		{
+			// Pitch Up
+			Rotation.Pitch = (Rotation.Pitch < BoostPitchAngleDegrees) ? Rotation.Pitch + BoostRotationSpeed * DeltaTime : BoostPitchAngleDegrees;
+		}
+		else if (bDescending)
+		{
+			// Pitch Down
+			Rotation.Pitch = (Rotation.Pitch > -BoostPitchAngleDegrees) ? Rotation.Pitch - BoostRotationSpeed * DeltaTime : -BoostPitchAngleDegrees;
+		}
+		BoostModeLastPitchAchieved = Rotation.Pitch;
+
+		// Change Roll
+		bReturnZeroRoll = !bTurning;
+		BoostModeZeroRollTimer = (bReturnZeroRoll) ? BoostModeZeroRollTimer : 0.0f;
+		if (bTurning)
+		{
+			if (bTurnDirectionRight)
+			{
+				Rotation.Roll = (Rotation.Roll < BoostRollAngleDegrees) ? Rotation.Roll + BoostRotationSpeed * DeltaTime : BoostRollAngleDegrees;
+			}
+			else
+			{
+				Rotation.Roll = (Rotation.Roll > -BoostRollAngleDegrees) ? Rotation.Roll - BoostRotationSpeed * DeltaTime : -BoostRollAngleDegrees;
+			}
+			BoostModeLastRollAchieved = Rotation.Roll;
+		}
+		SetActorRotation(Rotation);
+
+		// Apply Post Process Material
+		SpeedLinesFadeTimer += DeltaTime * SpeedLinesFadeFactor;
+		SpeedLinesFadeTimer = (SpeedLinesFadeTimer > 1.0f) ? 1.0f : SpeedLinesFadeTimer;
+		SpeedLinesMaterial->SetScalarParameterValue("Alpha", SpeedLinesFadeTimer);
+	}
+	else
+	{
+		// Stop Post Process Material
+		SpeedLinesFadeTimer -= DeltaTime * SpeedLinesFadeFactor;
+		SpeedLinesFadeTimer = (SpeedLinesFadeTimer < 0.0f) ? 0.0f : SpeedLinesFadeTimer;
+		SpeedLinesMaterial->SetScalarParameterValue("Alpha", SpeedLinesFadeTimer);
+	}
+
+	FRotator Rotation = GetActorRotation();
+	if (bReturnZeroPitch)
+	{
+		// Return to Zero Pitch
+		BoostModeZeroPitchTimer += DeltaTime * BoostReturnZeroPitchSpeed;
+		BoostModeZeroPitchTimer = (BoostModeZeroPitchTimer > 1.0f) ? 1.0f : BoostModeZeroPitchTimer;
+
+		Rotation.Pitch = FMath::Lerp(BoostModeLastPitchAchieved, 0.0f, BoostModeZeroPitchTimer);
+	}
+	if (bReturnZeroRoll)
+	{
+		// Return to Zero Roll
+		BoostModeZeroRollTimer += DeltaTime * BoostReturnZeroPitchSpeed;
+		BoostModeZeroRollTimer = (BoostModeZeroRollTimer > 1.0f) ? 1.0f : BoostModeZeroRollTimer;
+
+		Rotation.Roll = FMath::Lerp(BoostModeLastRollAchieved, 0.0f, BoostModeZeroRollTimer);
+	}
+	SetActorRotation(Rotation);
+
+	// Replicate Boost Mode Movement and Visuals
+	CurrTickClientMove.Rotation = Rotation;
+	CurrTickClientVisuals.bBoostModeActive = bBoostActive;
+}
+
 void ACombatVehicle::UpdateLightRidgeColor(float DeltaTime)
 {
 	// Lerp between Light Ridge Colors
 	LightRidgeLerpTimer += DeltaTime;
 
 	float LerpFactor = FMath::Abs(FMath::Sin(LightRidgeLerpTimer));
-	CurrLightRidgeColor = FMath::Lerp(LightRidgeColorStart, LightRidgeColorEnd, LerpFactor);
+
+	if (!bIsLockedIn)
+	{
+		// Fade back to Starting Color if recently Locked In
+		if (LightRidgeLockInTimer > 0.0f)
+		{
+			CurrLightRidgeColor = FMath::Lerp(LightRidgeColorStart, LightRidgeLockInColor, LightRidgeLockInTimer); // Lerp Backwards
+			LightRidgeLerpTimer = 0.0f;
+			LightRidgeLockInTimer -= DeltaTime * LightRidgeLockInFadeFactor;
+		}
+		else
+		{
+			// Proceed with Normal Color Cycle
+			CurrLightRidgeColor = FMath::Lerp(LightRidgeColorStart, LightRidgeColorEnd, LerpFactor);
+			ActiveLightRidgeColor = CurrLightRidgeColor;
+			LightRidgeLockInTimer = 0.0f;
+		}
+	}
+	else
+	{
+		// Fade to the Specified Lock In Color
+		LightRidgeLockInTimer = (LightRidgeLockInTimer < 1.0f) ? LightRidgeLockInTimer + DeltaTime * LightRidgeLockInFadeFactor : 1.0f;
+		CurrLightRidgeColor = FMath::Lerp(ActiveLightRidgeColor, LightRidgeLockInColor, LightRidgeLockInTimer);
+	}
+	
 	LightRidgeMaterial->SetVectorParameterValue("LightColor", CurrLightRidgeColor);
 
 	// Sync on all Instances
@@ -456,6 +630,43 @@ void ACombatVehicle::SetThrustFlameVisuals()
 				BrakeFlameLeftNS->Activate(true);
 			}
 		}
+
+		if (bBoostActive)
+		{
+			if (!bSetThrustToBoostMode)
+			{
+				ThrusterFlameCenterNS->SetNiagaraVariableFloat(TEXT("User.SpawnRate"), NSThrustBoostSpawnRate);
+				ThrusterFlameRightNS->SetNiagaraVariableFloat(TEXT("User.SpawnRate"), NSThrustBoostSpawnRate);
+				ThrusterFlameLeftNS->SetNiagaraVariableFloat(TEXT("User.SpawnRate"), NSThrustBoostSpawnRate);
+
+				ThrusterFlameCenterNS->SetNiagaraVariableLinearColor(TEXT("User.ThrustColor"), NSThrustBoostColor);
+				ThrusterFlameRightNS->SetNiagaraVariableLinearColor(TEXT("User.ThrustColor"), NSThrustBoostColor);
+				ThrusterFlameLeftNS->SetNiagaraVariableLinearColor(TEXT("User.ThrustColor"), NSThrustBoostColor);
+				
+				ThrusterFlameCenterNS->SetNiagaraVariableFloat(TEXT("User.MaxLifeTime"), NSThrustBoostLifeTime);
+				ThrusterFlameRightNS->SetNiagaraVariableFloat(TEXT("User.MaxLifeTime"), NSThrustBoostLifeTime);
+				ThrusterFlameLeftNS->SetNiagaraVariableFloat(TEXT("User.MaxLifeTime"), NSThrustBoostLifeTime);
+
+
+				bSetThrustToBoostMode = true;
+			}
+		}
+		else if (bSetThrustToBoostMode)
+		{
+			ThrusterFlameCenterNS->SetNiagaraVariableFloat(TEXT("User.SpawnRate"), NSThrustNormalSpawnRate);
+			ThrusterFlameRightNS->SetNiagaraVariableFloat(TEXT("User.SpawnRate"), NSThrustNormalSpawnRate);
+			ThrusterFlameLeftNS->SetNiagaraVariableFloat(TEXT("User.SpawnRate"), NSThrustNormalSpawnRate);
+
+			ThrusterFlameCenterNS->SetNiagaraVariableLinearColor(TEXT("User.ThrustColor"), NSThrustNormalColor);
+			ThrusterFlameRightNS->SetNiagaraVariableLinearColor(TEXT("User.ThrustColor"), NSThrustNormalColor);
+			ThrusterFlameLeftNS->SetNiagaraVariableLinearColor(TEXT("User.ThrustColor"), NSThrustNormalColor);
+
+			ThrusterFlameCenterNS->SetNiagaraVariableFloat(TEXT("User.MaxLifeTime"), NSThrustNormalLifeTime);
+			ThrusterFlameRightNS->SetNiagaraVariableFloat(TEXT("User.MaxLifeTime"), NSThrustNormalLifeTime);
+			ThrusterFlameLeftNS->SetNiagaraVariableFloat(TEXT("User.MaxLifeTime"), NSThrustNormalLifeTime);
+
+			bSetThrustToBoostMode = false;
+		}
 	}
 	else
 	{
@@ -503,6 +714,42 @@ void ACombatVehicle::SetTurningFlameVisuals()
 
 	CurrTickClientVisuals.bActivateTurningFlames = bTurning;
 	CurrTickClientVisuals.bTurnDirectionRight = bTurnDirectionRight;
+}
+
+void ACombatVehicle::SetSpeedTrailVisuals()
+{
+	if (bBoostActive)
+	{
+		if (!SpeedTrailLeftNS->IsActive())
+		{
+			SpeedTrailLeftNS->Activate();
+		}
+		if (!SpeedTrailRightNS->IsActive())
+		{
+			SpeedTrailRightNS->Activate();
+		}
+		bSpeedTrailTimerSet = false;
+	}
+	else
+	{
+		if (!bSpeedTrailTimerSet)
+		{
+			GetWorldTimerManager().SetTimer(SpeedTrailTimer, this, &ACombatVehicle::StopSpeedTrailVisuals, SpeedTrailStopTime);
+			bSpeedTrailTimerSet = true;
+		}
+	}
+}
+
+void ACombatVehicle::StopSpeedTrailVisuals()
+{
+	if (SpeedTrailLeftNS->IsActive())
+	{
+		SpeedTrailLeftNS->Deactivate();
+	}
+	if (SpeedTrailRightNS->IsActive())
+	{
+		SpeedTrailRightNS->Deactivate();
+	}
 }
 
 void ACombatVehicle::UpdateTurretOrientation()
@@ -601,19 +848,11 @@ void ACombatVehicle::StartShooting()
 
 		GetWorld()->GetTimerManager().SetTimer(FiringTimer, this, &ACombatVehicle::StopShooting, FireRate, false);
 		
-		// Acquire Screen Center in World Position
-		FVector WorldPosition;
-		FVector WorldDirection;
-		int ScreenCenterX, ScreenCenterY;
-		APlayerController* PlayerController = Cast<APlayerController>(GetController());
-		PlayerController->GetViewportSize(ScreenCenterX, ScreenCenterY);
-		PlayerController->DeprojectScreenPositionToWorld((float)ScreenCenterX / 2.0f, (float)ScreenCenterY / 2.0f, WorldPosition, WorldDirection);
-		
-		// Offset Spawn Position
-		FVector SpawnPoint = WorldPosition - (TurretCameraComp->GetUpVector() * ProjectileSpawnOffsetDown);
-
 		// Ask Server to Spawn the Projectile
-		RPC_Server_HandleShooting(SpawnPoint, TurretCameraComp->GetForwardVector());
+		if (AbilitySystemComp)
+		{
+			bool bResult = AbilitySystemComp->TryActivateAbilityByClass(UShootingGameplayAbility::StaticClass());
+		}
 	}
 }
 
@@ -668,26 +907,15 @@ void ACombatVehicle::RPC_Multicast_UpdateVisuals_Implementation(FNetClientVisual
 	{
 		TurretMeshComp->SetWorldRotation(NewVisuals.TurretRotation);
 	}
+
+	// Update Speed Trails
+	bBoostActive = NewVisuals.bBoostModeActive;
+	SetSpeedTrailVisuals();
 }
 
 void ACombatVehicle::RPC_Server_UpdateVisuals_Implementation(FNetClientVisuals NewVisuals)
 {
 	RPC_Multicast_UpdateVisuals(NewVisuals);
-}
-
-void ACombatVehicle::RPC_Server_HandleShooting_Implementation(FVector SpawnPosition, FVector Direction)
-{
-	FVector SpawnLocation = SpawnPosition;
-	FRotator SpawnRotation = FRotator();
-
-	FActorSpawnParameters SpawnParameters;
-	SpawnParameters.Instigator = GetInstigator();
-	SpawnParameters.Owner = this;
-
-	AVehicleProjectile* SpawnedProjectile = GetWorld()->SpawnActor<AVehicleProjectile>(VehicleProjectile, SpawnLocation, SpawnRotation, SpawnParameters);
-	SpawnedProjectile->SetDirection(Direction);
-	SpawnedProjectile->MoveDirection = Direction;
-	SpawnedProjectile->StartPosition = SpawnPosition;
 }
 
 void ACombatVehicle::RPC_Server_UpdateMovement_Implementation(FNetClientPredStats NetClientPredStatsParam)
@@ -706,7 +934,10 @@ void ACombatVehicle::RPC_Server_UpdateMovement_Implementation(FNetClientPredStat
 	MeshComp->SetPhysicsLinearVelocity(Vel);
 	MeshComp->AddForce(Move.Force, NAME_None, true);
 
+	SetActorRotation(Move.Rotation);
+
 	if (Move.bSetAngVelocity)
 		MeshComp->SetPhysicsAngularVelocityInDegrees(Move.AngVelocity);
 	MeshComp->AddTorqueInDegrees(Move.Torque, NAME_None, true);
 }
+
