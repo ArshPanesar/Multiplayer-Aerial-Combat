@@ -11,6 +11,8 @@
 #include "AbilitySystemComponent.h"
 
 #include <Net/UnrealNetwork.h>
+#include <Kismet/GameplayStatics.h>
+#include "Components/DecalComponent.h"
 
 // Sets default values
 ACombatVehicle::ACombatVehicle() : NetClientPredStats()
@@ -133,9 +135,22 @@ void ACombatVehicle::BeginPlay()
 		// Add to Camera Post-Processing
 		VehicleCameraComp->PostProcessSettings.AddBlendable(SpeedLinesMaterial, 1.0f);
 	}
+	UMaterialInterface* HitEffectMaterialInterface = Cast<UMaterialInterface>(StaticLoadObject(UMaterial::StaticClass(), nullptr, TEXT("/Game/Models/PostProcess/M_PP_HitEffect.M_PP_HitEffect")));
+	HitEffectMaterial = UMaterialInstanceDynamic::Create(HitEffectMaterialInterface, this);
+	if (HitEffectMaterial)
+	{
+		HitEffectMaterial->SetScalarParameterValue("Alpha", 0.0f);
+
+		// Add to Camera Post-Processing
+		VehicleCameraComp->PostProcessSettings.AddBlendable(HitEffectMaterial, 1.0f);
+	}
+
+	// Load Decal Material
+	DecalMaterial = Cast<UMaterialInterface>(StaticLoadObject(UMaterial::StaticClass(), nullptr, TEXT("/Game/Models/Decals/M_ProjectileDecal.M_ProjectileDecal")));
 
 	// Initialize Health for UI
 	UI_OnHealthUpdate(CurrentHealth);
+	bDeathQueued = false;
 
 	// Network Check
 	bReplicates = true;
@@ -159,6 +174,7 @@ void ACombatVehicle::Tick(float DeltaTime)
 		SetThrustFlameVisuals();
 		SetTurningFlameVisuals();
 		SetSpeedTrailVisuals();
+		UpdateHitEffect(DeltaTime);
 
 		UpdateTurretOrientation();
 
@@ -752,6 +768,16 @@ void ACombatVehicle::StopSpeedTrailVisuals()
 	}
 }
 
+void ACombatVehicle::UpdateHitEffect(float DeltaTime)
+{
+	if (HitEffectFadeTimer > 0.0f)
+	{
+		HitEffectFadeTimer -= DeltaTime * HitEffectFadeFactor;
+		HitEffectFadeTimer = (SpeedLinesFadeTimer < 0.0f) ? 0.0f : HitEffectFadeTimer;
+		HitEffectMaterial->SetScalarParameterValue("Alpha", HitEffectFadeTimer);
+	}
+}
+
 void ACombatVehicle::UpdateTurretOrientation()
 {
 	if (bIsLockedIn)
@@ -771,6 +797,10 @@ void ACombatVehicle::UpdateTurretOrientation()
 
 void ACombatVehicle::OnHealthUpdate()
 {
+	// Don't Accept Any Updates after Death is Queued
+	if (bDeathQueued)
+		return;
+
 	// Client-side Actions
 	if (IsLocallyControlled())
 	{
@@ -784,6 +814,7 @@ void ACombatVehicle::OnHealthUpdate()
 		{
 			// Let the Blueprint Handle Death Scenario
 			BP_PlayerDeath();
+			bDeathQueued = true;
 		}
 	}
 }
@@ -941,3 +972,21 @@ void ACombatVehicle::RPC_Server_UpdateMovement_Implementation(FNetClientPredStat
 	MeshComp->AddTorqueInDegrees(Move.Torque, NAME_None, true);
 }
 
+void ACombatVehicle::RPC_Multicast_SpawnDecal_Implementation(FVector Location, FRotator Rotation, FVector DecalTexSize)
+{
+	UDecalComponent* DecalComp = UGameplayStatics::SpawnDecalAttached(DecalMaterial, DecalTexSize, MeshComp, NAME_None, Location,
+		Rotation, EAttachLocation::KeepWorldPosition, 5.0f);
+	DecalComp->SetFadeScreenSize(0.0f);
+
+	if (IsLocallyControlled())
+	{
+		// Display Hit Effect
+		HitEffectFadeTimer = 1.0f;
+		HitEffectMaterial->SetScalarParameterValue("Alpha", HitEffectFadeTimer);
+	}
+}
+
+void ACombatVehicle::RPC_Server_SpawnDecal_Implementation(FVector Location, FRotator Rotation, FVector DecalTexSize)
+{
+	RPC_Multicast_SpawnDecal(Location, Rotation, DecalTexSize);
+}

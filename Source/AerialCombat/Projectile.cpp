@@ -4,7 +4,9 @@
 #include "Projectile.h"
 #include <Net/UnrealNetwork.h>
 #include <Kismet/GameplayStatics.h>
+#include "Components/DecalComponent.h"
 
+#include "CombatVehicle.h"
 
 // Sets default values
 AProjectile::AProjectile()
@@ -93,6 +95,7 @@ void AProjectile::BeginPlay()
 	if (HasAuthority())
 	{
 		SphereCollision->OnComponentBeginOverlap.AddDynamic(this, &AProjectile::OnProjectileBeginOverlap);
+		SphereCollision->OnComponentHit.AddDynamic(this, &AProjectile::OnProjectileHit);
 	}
 }
 
@@ -103,9 +106,24 @@ void AProjectile::OnProjectileBeginOverlap(UPrimitiveComponent* OverlappedCompon
 		return;
 	if (OtherActor)
 	{
+		// Apply Damage
 		UGameplayStatics::ApplyPointDamage(OtherActor, Damage, FVector(), Hit, GetInstigator()->Controller, this, DamageType);
+		
+		// Spawn Decal
+		if (ACombatVehicle* CV = Cast<ACombatVehicle>(OtherActor))
+		{
+			CV->RPC_Server_SpawnDecal(Hit.Location, (-Hit.ImpactNormal).Rotation(), DecalSize);
+		}
+
+		// Queue for Destroy
 		Destroy();
 	}
+}
+
+void AProjectile::OnProjectileHit(UPrimitiveComponent* HitComp, AActor* OtherActor, UPrimitiveComponent* OtherComp, FVector NormalImpulse, const FHitResult& Hit)
+{
+	// Queue for Destroy
+	Destroy();
 }
 
 void AProjectile::LinkFakeProjectile(AProjectile* InFakeProjectile)

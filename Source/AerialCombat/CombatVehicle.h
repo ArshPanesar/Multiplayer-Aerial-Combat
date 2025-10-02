@@ -244,6 +244,9 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Visuals")
 	float SpeedLinesFadeFactor = 1.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Visuals")
+	float HitEffectFadeFactor = 1.0f;
+
 	// Speed Trails
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Visuals")
 	float SpeedTrailStopTime = 2.0f;
@@ -294,14 +297,21 @@ public:
 	// Locking In
 	bool bIsLockedIn = false;
 
-	// Post Process Material
+	// Post Process Material: Speed Lines
 	UMaterialInstanceDynamic* SpeedLinesMaterial;
 	float SpeedLinesLastWeight = 0.0f;
 	float SpeedLinesFadeTimer = 0.0f;
 
+	// Post Process Material: Hit Effect
+	UMaterialInstanceDynamic* HitEffectMaterial;
+	float HitEffectFadeTimer = 0.0f;
+
 	// Speed Trail Timer
 	FTimerHandle SpeedTrailTimer;
 	bool bSpeedTrailTimerSet = false;
+
+	// Death
+	bool bDeathQueued = false;
 
 	// Network
 	FNetClientPredStats NetClientPredStats;
@@ -355,6 +365,9 @@ protected:
 
 	// ASC (Initialized by ACPlayerState)
 	UCVAbilitySystemComponent* AbilitySystemComp;
+
+	// Projectile Decal Material
+	UMaterialInterface* DecalMaterial;
 
 private:
 
@@ -463,6 +476,7 @@ public:
 	void SetTurningFlameVisuals();
 	void SetSpeedTrailVisuals();
 	void StopSpeedTrailVisuals(); // Called by Timer
+	void UpdateHitEffect(float DeltaTime);
 
 	void UpdateTurretOrientation();
 
@@ -531,6 +545,13 @@ public:
 	// Must be Called by SERVER
 	UFUNCTION(NetMulticast, Unreliable)
 	void RPC_Multicast_UpdateVisuals(FNetClientVisuals NewVisuals);
+
+	// Projectile Decals
+	UFUNCTION(Server, Unreliable)
+	void RPC_Server_SpawnDecal(FVector Location, FRotator Rotation, FVector DecalTexSize);
+
+	UFUNCTION(NetMulticast, Unreliable)
+	void RPC_Multicast_SpawnDecal(FVector Location, FRotator Rotation, FVector DecalTexSize);
 
 	//
 	// Triggers for Blueprint Event
