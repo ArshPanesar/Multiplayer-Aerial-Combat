@@ -815,6 +815,19 @@ void ACombatVehicle::OnHealthUpdate()
 			// Let the Blueprint Handle Death Scenario
 			BP_PlayerDeath();
 			bDeathQueued = true;
+
+			// Update Leaderboard Stats
+			if (AACPlayerState* OwnPlayerState = Cast<AACPlayerState>(GetPlayerState()))
+			{
+				OwnPlayerState->NumDeaths += 1;
+			}
+			if (LastShotBy)
+			{
+				if (AACPlayerState* OtherPlayerState = Cast<AACPlayerState>(LastShotBy->GetPlayerState()))
+				{
+					OtherPlayerState->NumKills += 1;
+				}
+			}
 		}
 	}
 }
@@ -831,7 +844,10 @@ void ACombatVehicle::SetCurrentHealth(float HealthValue)
 float ACombatVehicle::TakeDamage(float DamageTaken, FDamageEvent const& DamageEvent, AController* EventInstigator, AActor* DamageCauser)
 {
 	float DamageApplied = CurrentHealth - DamageTaken;
+	LastShotBy = Cast<ACombatVehicle>(DamageCauser);
+	
 	SetCurrentHealth(DamageApplied);
+
 	return DamageApplied;
 }
 

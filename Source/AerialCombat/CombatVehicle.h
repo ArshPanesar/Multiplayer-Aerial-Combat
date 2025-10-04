@@ -263,6 +263,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Shooting")
 	float FireRate;
 	
+	// Which CV Shot this Instance Last
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Vehicle | Shooting")
+	ACombatVehicle* LastShotBy = nullptr;
+
 	// Timer to control FireRate
 	FTimerHandle FiringTimer;
 

@@ -5,6 +5,9 @@
 
 AACPlayerState::AACPlayerState()
 {
+	NumKills = 0;
+	NumDeaths = 0;
+
 	AbilitySystemComponent = CreateDefaultSubobject<UCVAbilitySystemComponent>(TEXT("AbilitySystemComponent"));
 	AbilitySystemComponent->SetIsReplicated(true);
 }

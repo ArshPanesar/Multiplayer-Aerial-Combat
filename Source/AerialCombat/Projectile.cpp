@@ -107,7 +107,7 @@ void AProjectile::OnProjectileBeginOverlap(UPrimitiveComponent* OverlappedCompon
 	if (OtherActor)
 	{
 		// Apply Damage
-		UGameplayStatics::ApplyPointDamage(OtherActor, Damage, FVector(), Hit, GetInstigator()->Controller, this, DamageType);
+		UGameplayStatics::ApplyPointDamage(OtherActor, Damage, FVector(), Hit, GetInstigator()->Controller, GetInstigator(), DamageType);
 		
 		// Spawn Decal
 		if (ACombatVehicle* CV = Cast<ACombatVehicle>(OtherActor))

@@ -26,6 +26,12 @@ public:
 
 	virtual void BeginPlay() override;
 
+	// Leaderboard Stats
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Stats")
+	int NumKills = 0;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Stats")
+	int NumDeaths = 0;
 
 	// ASC
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Abilities")
