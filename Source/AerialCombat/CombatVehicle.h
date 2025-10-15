@@ -15,30 +15,27 @@
 
 // Network
 USTRUCT()
-struct FNetClientMove // Per Tick
+struct FNetClientMove
 {
 	GENERATED_BODY()
 
 	UPROPERTY()
-	FVector Velocity = FVector();
+	float Timestamp = 0.0f;
 
 	UPROPERTY()
-	FVector Force = FVector();
+	float InputVertical = 0.0f; // Deals with Asceding/Descending
 
 	UPROPERTY()
-	FVector Torque = FVector();
+	float InputForward = 0.0f; // Deals with Forward/Backward Movement
 
 	UPROPERTY()
-	FVector AngVelocity = FVector();
+	float InputSteering = 0.0f; // Deals with Left/Right Turning
 
 	UPROPERTY()
-	FVector3d SetVelocityComp = FVector3d();
+	float InputBoost = 0.0f; // Boost Mode
 
 	UPROPERTY()
-	FRotator Rotation = FRotator();
-
-	UPROPERTY()
-	bool bSetAngVelocity = false;
+	FRotator BoostRotation = FRotator(); // Boost Mode Rotation (Need this to relieve Server of Computing Rotations in Boost Mode)
 };
 
 USTRUCT()
@@ -50,7 +47,7 @@ struct FNetClientPredStats
 	TArray<FNetClientMove> MoveQueue;
 
 	UPROPERTY()
-	int MaxMovesInQueue = 16;
+	int MaxMovesInQueue = 64;
 
 public:
 	FNetClientPredStats() : MoveQueue()
@@ -75,6 +72,14 @@ public:
 		{
 			MoveQueue.Add(Move);
 		}
+		else 
+		{
+			// Remove Last Move
+			MoveQueue.RemoveAt(0);
+
+			// Add New Move
+			MoveQueue.Add(Move);
+		}
 	}
 
 	// Dequeue Moves
@@ -89,15 +94,42 @@ public:
 		return Move;
 	}
 
-	// Update on Client-Side for Next Tick
-	// Must be called after Server RPC
-	void UpdateClient()
+	// Update Client for Acknowledged Moves
+	void RemoveAcknowledgedMoves(float AckTimestamp)
 	{
-		// Assume First Move Processed by Server
-		ExtractMove();
+		int i = 0;
+		while (i < MoveQueue.Num())
+		{
+			if (MoveQueue[i].Timestamp <= AckTimestamp)
+			{
+				MoveQueue.RemoveAt(i);
+			}
+			else
+			{
+				++i;
+			}
+		}
 	}
 };
 
+USTRUCT()
+struct FNetServerStats // Holds the Last Movement Data for the Vehicle validated by the Server
+{
+	GENERATED_BODY()
+	
+	UPROPERTY()
+	float Timestamp = 0.0f;
+
+	UPROPERTY() 
+	FVector Location = FVector();
+	
+	UPROPERTY() 
+	FRotator Rotation = FRotator();
+	
+	UPROPERTY() 
+	FVector Velocity = FVector();
+	
+};
 
 USTRUCT()
 struct FNetClientVisuals
@@ -192,6 +224,9 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle")
 	float MaxTurningSpeed = 40.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Network")
+	float MaxNetPredictionError = 50.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vehicle | Camera")
 	FVector2D NormalCameraPitchLimits = FVector2D(-90.0f, 90.0f);
@@ -321,6 +356,12 @@ public:
 	FNetClientPredStats NetClientPredStats;
 	FNetClientMove CurrTickClientMove;
 	FNetClientVisuals CurrTickClientVisuals;
+	
+	// Server-side
+	UPROPERTY(ReplicatedUsing = OnRep_ServerStats)
+	FNetServerStats ServerStats;
+
+	bool bShouldReconcileMovement = false;
 
 protected:
 	// Called when the game starts or when spawned
@@ -461,14 +502,15 @@ public:
 	UFUNCTION()
 	void ActivateBoost(const FInputActionValue& Value);
 
+	void UpdateMovement(FNetClientMove& Move);
 
 	// Hovering
 	UFUNCTION()
-	void Hover(float DeltaTime);
+	void ComputeHoverPhysics(float DeltaTime, float& VelZ, FVector& Force);
 
 	// Decelerating Forward/Backward Movement and Rotation
 	UFUNCTION()
-	void Decelerate(float DeltaTime);
+	void ComputeDeceleration(float DeltaTime, FVector& Force, FVector& Torque);
 
 	// Boost Mode
 	void UpdateBoostMode(float DeltaTime);
@@ -530,11 +572,16 @@ public:
 	UFUNCTION()
 	void OnRep_CurrentHealth();
 
+	// Update Server Movement Stats
+	UFUNCTION()
+	void OnRep_ServerStats();
+
+
 	// RPC Calls
 
 	// Notify Server About Movement
 	UFUNCTION(Server, Unreliable)
-	void RPC_Server_UpdateMovement(FNetClientPredStats NetClientPredStatsParam);
+	void RPC_Server_UpdateMovement(FNetClientMove ClientMove);
 
 	// Notify Server About Shooting
 	/*UFUNCTION(Server, Unreliable)
@@ -561,12 +608,12 @@ public:
 	// Triggers for Blueprint Event
 	//
 
-	UFUNCTION(BlueprintImplementableEvent)
+	UFUNCTION(BlueprintCallable, BlueprintImplementableEvent)
 	void UI_OnHealthUpdate(float Health);
 
-	UFUNCTION(BlueprintImplementableEvent)
+	UFUNCTION(BlueprintCallable, BlueprintImplementableEvent)
 	void UI_SetLockedIn(bool bActivate);
 
-	UFUNCTION(BlueprintImplementableEvent)
+	UFUNCTION(BlueprintCallable, BlueprintImplementableEvent)
 	void BP_PlayerDeath();
 };

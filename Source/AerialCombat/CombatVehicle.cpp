@@ -155,6 +155,12 @@ void ACombatVehicle::BeginPlay()
 	// Network Check
 	bReplicates = true;
 	bIsClient = (GetNetMode() == ENetMode::NM_Client);
+	
+	// Disable Gravity for Simulated Proxies
+	if (GetLocalRole() == ROLE_SimulatedProxy)
+	{
+		MeshComp->SetEnableGravity(false);
+	}
 }
 
 // Called every frame
@@ -162,13 +168,39 @@ void ACombatVehicle::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
+	// Reconcile for Autonomous and Simulated Proxies
+	if (!HasAuthority())
+	{
+		FVector ReconciledLocation = FMath::VInterpTo(GetActorLocation(), ServerStats.Location, DeltaTime, 4.0f);
+		FRotator ReconciledRotation = FMath::RInterpTo(GetActorRotation(), ServerStats.Rotation, DeltaTime, 4.0f);
+
+		// Simulated Proxies will Always Reconcile
+		if (GetLocalRole() == ROLE_SimulatedProxy)
+		{
+			SetActorLocationAndRotation(ReconciledLocation, ReconciledRotation);
+		}
+
+		// Autonomous Proxy will Reconcile with Server if needed
+		if (bShouldReconcileMovement)
+		{
+			FVector ReconciledVelocity = FMath::VInterpTo(GetVelocity(), ServerStats.Velocity, DeltaTime, 4.0f);
+
+			SetActorLocationAndRotation(ReconciledLocation, ReconciledRotation);
+			if (IsLocallyControlled()) // Simulated Proxies don't need to worry about Velocity
+			{
+				MeshComp->SetPhysicsLinearVelocity(ReconciledVelocity);
+			}
+
+			// Check if Reconciled (Using Location only)
+			FVector LocError = ReconciledLocation - ServerStats.Location;
+			bShouldReconcileMovement = LocError.SizeSquared() > MaxNetPredictionError * MaxNetPredictionError;
+		}
+	}
+
 	// Perform Physics Locally
 	if (IsLocallyControlled())
 	{
 		UpdateBoostMode(DeltaTime);
-		Hover(DeltaTime);
-		Decelerate(DeltaTime);
-
 		UpdateLightRidgeColor(DeltaTime);
 		UpdateJetFlameVisuals(DeltaTime);
 		SetThrustFlameVisuals();
@@ -178,13 +210,18 @@ void ACombatVehicle::Tick(float DeltaTime)
 
 		UpdateTurretOrientation();
 
+		// Apply Move
+		CurrTickClientMove.Timestamp = GetWorld()->GetTimeSeconds();
+		if (!HasAuthority())
+		{
+			UpdateMovement(CurrTickClientMove);
+		}
+		
 		// Enqueue the Resultant Move of this Tick
 		NetClientPredStats.AddMove(CurrTickClientMove);
-		if (!NetClientPredStats.IsMoveQueueEmpty())
-		{
-			RPC_Server_UpdateMovement(NetClientPredStats);
-			NetClientPredStats.UpdateClient();
-		}
+		
+		// Ask Server to Authorize Move
+		RPC_Server_UpdateMovement(CurrTickClientMove);
 
 		// Prepare for the Next Tick
 		CurrTickClientMove = FNetClientMove();
@@ -282,21 +319,10 @@ void ACombatVehicle::Look(const FInputActionValue& Value)
 
 void ACombatVehicle::Ascend(const FInputActionValue& Value)
 {
-	if (GetVelocity().Z > MaxAscentVelocity)
-	{
-		CurrTickClientMove.Velocity.Z = MaxAscentVelocity;
-		CurrTickClientMove.SetVelocityComp.Z = 1;
-	}
-	else
-	{
-		CurrTickClientMove.Force += FVector(0.0f, 0.0f, GameGravity + AscentAcceleration);
-	}
+	CurrTickClientMove.InputVertical = 1.0f;
 
 	bAscending = true;
 	bShouldHover = false;
-
-	//GEngine->AddOnScreenDebugMessage(-1, 1.0f, FColor::Red,
-	//	FString::Printf(TEXT("ZVel: %f , Height: %f"), GetVelocity().Z, GetActorLocation().Z));
 }
 
 void ACombatVehicle::StopAscending(const FInputActionValue& Value)
@@ -309,21 +335,10 @@ void ACombatVehicle::StopAscending(const FInputActionValue& Value)
 
 void ACombatVehicle::Descend(const FInputActionValue& Value)
 {
-	if (GetVelocity().Z < MaxDescentVelocity)
-	{
-		CurrTickClientMove.Velocity.Z = MaxDescentVelocity;
-		CurrTickClientMove.SetVelocityComp.Z = 1;
-	}
-	else
-	{
-		CurrTickClientMove.Force += FVector(0.0f, 0.0f, GameGravity + DescentAcceleration);
-	}
+	CurrTickClientMove.InputVertical = -1.0f;
+	
 	bShouldHover = false;
 	bDescending = true;
-
-	/*GEngine->AddOnScreenDebugMessage(-1, 1.0f, FColor::Blue,
-		FString::Printf(TEXT("ZVel: %f , Height: %f"), GetVelocity().Z, GetActorLocation().Z));*/
-
 }
 
 void ACombatVehicle::StopDescending(const FInputActionValue& Value)
@@ -336,78 +351,37 @@ void ACombatVehicle::StopDescending(const FInputActionValue& Value)
 
 void ACombatVehicle::MoveForward(const FInputActionValue& Value)
 {
-	// Clamp Velocity
-	FVector Vel(GetVelocity());
-	Vel.Z = 0.0f;
+	CurrTickClientMove.InputForward = 1.0f;
 
-	float UseMaxVel = bBoostActive ? BoostModeMaxVelocity : MaxMovementVelocity;
-	float UseAcc = bBoostActive ? BoostModeAcceleration : MovementAcceleration;
-	if (Vel.SquaredLength() > UseMaxVel * UseMaxVel && Vel.Dot(GetActorForwardVector()) > 0.0f)
+	if (bBoostActive)
 	{
-		Vel = UseMaxVel * GetActorForwardVector();
-		CurrTickClientMove.Velocity.X = Vel.X;
-		CurrTickClientMove.Velocity.Y = Vel.Y;
-		CurrTickClientMove.SetVelocityComp.X = 1;
-		CurrTickClientMove.SetVelocityComp.Y = 1;
-	}
-	else
-	{
-		// Apply Acceleration
-		FVector Acc = UseAcc * GetActorForwardVector();
-		CurrTickClientMove.Force += Acc;
+		CurrTickClientMove.InputBoost = 1.0f;
 	}
 
 	bMoving = true;
 	bMoveDirectionForward = true;
-
-	/*GEngine->AddOnScreenDebugMessage(-1, 1.0f, FColor::Blue,
-		FString::Printf(TEXT("VelSq: %f"), GetVelocity().SquaredLength()));*/
 }
 
 void ACombatVehicle::MoveBackward(const FInputActionValue& Value)
 {
-	// Clamp Velocity
-	FVector Vel(GetVelocity());
-	Vel.Z = 0.0f;
-	if (Vel.SquaredLength() > MaxMovementVelocity * MaxMovementVelocity && Vel.Dot(-GetActorForwardVector()) > 0.0f)
-	{
-		Vel = -MaxMovementVelocity * GetActorForwardVector();
-		CurrTickClientMove.Velocity.X = Vel.X;
-		CurrTickClientMove.Velocity.Y = Vel.Y;
-		CurrTickClientMove.SetVelocityComp.X = 1;
-		CurrTickClientMove.SetVelocityComp.Y = 1;
-	}
-	else
-	{
-		// Apply Acceleration
-		FVector Acc = -MovementAcceleration * GetActorForwardVector();
-		CurrTickClientMove.Force += Acc;
-	}
+	CurrTickClientMove.InputForward = -1.0f;
 
 	bMoving = true;
 	bMoveDirectionForward = false;
-
-	/*GEngine->AddOnScreenDebugMessage(-1, 1.0f, FColor::Red,
-		FString::Printf(TEXT("VelSq: %f"), GetVelocity().SquaredLength()));*/
 }
 
 void ACombatVehicle::StopMoving(const FInputActionValue& Value)
 {
 	bMoving = false;
 	bBoostActive = false;
+
+	CurrTickClientMove.InputForward = 0.0f;
+	CurrTickClientMove.InputBoost = 0.0f;
 }
 
 void ACombatVehicle::TurnLeft(const FInputActionValue& Value)
 {
-	if (MeshComp->GetPhysicsAngularVelocityInDegrees().SquaredLength() > MaxTurningSpeed * MaxTurningSpeed)
-	{
-		CurrTickClientMove.AngVelocity = FVector(0.0f, 0.0f, -MaxTurningSpeed);
-		CurrTickClientMove.bSetAngVelocity = true;
-	}
-	else
-	{
-		CurrTickClientMove.Torque += FVector(0.0f, 0.0f, -TurningTorque);
-	}
+	CurrTickClientMove.InputSteering = -1.0f;
 
 	bTurning = true;
 	bTurnDirectionRight = false;
@@ -415,15 +389,7 @@ void ACombatVehicle::TurnLeft(const FInputActionValue& Value)
 
 void ACombatVehicle::TurnRight(const FInputActionValue& Value)
 {
-	if (MeshComp->GetPhysicsAngularVelocityInDegrees().Z > MaxTurningSpeed)
-	{
-		CurrTickClientMove.AngVelocity = FVector(0.0f, 0.0f, MaxTurningSpeed);
-		CurrTickClientMove.bSetAngVelocity = true;
-	}
-	else
-	{
-		CurrTickClientMove.Torque += FVector(0.0f, 0.0f, TurningTorque);
-	}
+	CurrTickClientMove.InputSteering = 1.0f;
 
 	bTurning = true;
 	bTurnDirectionRight = true;
@@ -431,6 +397,8 @@ void ACombatVehicle::TurnRight(const FInputActionValue& Value)
 
 void ACombatVehicle::StopTurning(const FInputActionValue& Value)
 {
+	CurrTickClientMove.InputSteering = 0.0f;
+
 	bTurning = false;
 }
 
@@ -438,39 +406,174 @@ void ACombatVehicle::ActivateBoost(const FInputActionValue& Value)
 {
 	if (bMoving && bMoveDirectionForward)
 	{
+		CurrTickClientMove.InputBoost = 1.0f;
 		bBoostActive = true;
 	}
 }
 
-void ACombatVehicle::Hover(float DeltaTime)
+void ACombatVehicle::UpdateMovement(FNetClientMove& Move)
+{
+	//// Global Control Parameters for Movement
+	//static float MaxVerticalVelocityAchieved = 0.0f;
+
+	// Read the Inputs and generate the required Forces/Velocities
+	FVector ApplyVelocity = FVector();
+	FVector ApplyForce = FVector();
+	FVector3d SetVelocityComp = FVector3d();
+
+	// Ascending/Descending
+	bShouldHover = true;
+	if (FMath::Abs(Move.InputVertical) > 0.0f)
+	{
+		float MaxVerticalVelocity = Move.InputVertical > 0.0f ? MaxAscentVelocity : MaxDescentVelocity;
+		float VerticalAcc = Move.InputVertical > 0.0f ? AscentAcceleration : DescentAcceleration;
+
+		if (GetVelocity().Z > MaxVerticalVelocity)
+		{
+			ApplyVelocity.Z = MaxVerticalVelocity;
+			SetVelocityComp.Z = 1;
+		}
+		else
+		{
+			ApplyForce += FVector(0.0f, 0.0f, GameGravity + VerticalAcc);
+		}
+
+		MaxVelAchieved = GetVelocity().Z;
+		HoverTime = 0.0f;
+		bShouldHover = false;
+	}
+	
+	// Forward Movement (with Boost)
+	bBoostActive = Move.InputBoost > 0.0f;
+	bMoving = false;
+
+	if (Move.InputForward > 0.0f)
+	{
+		float UseMaxVel = bBoostActive ? BoostModeMaxVelocity : MaxMovementVelocity;
+		float UseAcc = bBoostActive ? BoostModeAcceleration : MovementAcceleration;
+		if (GetVelocity().SquaredLength() > UseMaxVel * UseMaxVel && GetVelocity().Dot(GetActorForwardVector()) > 0.0f)
+		{
+			FVector Vel = UseMaxVel * GetActorForwardVector();
+			ApplyVelocity.X = Vel.X;
+			ApplyVelocity.Y = Vel.Y;
+			SetVelocityComp.X = 1;
+			SetVelocityComp.Y = 1;
+		}
+		else
+		{
+			// Apply Acceleration
+			FVector Acc = UseAcc * GetActorForwardVector();
+			ApplyForce += Acc;
+		}
+
+		bMoving = true;
+	}
+	else if (Move.InputForward < 0.0f) // Backward Movement
+	{
+		FVector Vel(GetVelocity());
+		Vel.Z = 0.0f;
+
+		if (Vel.SquaredLength() > MaxMovementVelocity * MaxMovementVelocity && Vel.Dot(-GetActorForwardVector()) > 0.0f)
+		{
+			Vel = -MaxMovementVelocity * GetActorForwardVector();
+			ApplyVelocity.X = Vel.X;
+			ApplyVelocity.Y = Vel.Y;
+			SetVelocityComp.X = 1;
+			SetVelocityComp.Y = 1;
+		}
+		else
+		{
+			// Apply Acceleration
+			FVector Acc = -MovementAcceleration * GetActorForwardVector();
+			ApplyForce += Acc;
+		}
+
+		bMoving = true;
+	}
+	
+	// Steering
+	FVector Torque = FVector();
+	FVector AngVelocity = FVector();
+	bool bSetAngVelocity = false;
+
+	bTurning = false;
+
+	if (FMath::Abs(Move.InputSteering) > 0.0f)
+	{
+		float UseMaxTurningSpeed = Move.InputSteering > 0.0f ? MaxTurningSpeed : -MaxTurningSpeed;
+		float UseTurningTorque = Move.InputSteering > 0.0f ? TurningTorque : -TurningTorque;
+
+		if (MeshComp->GetPhysicsAngularVelocityInDegrees().SquaredLength() > MaxTurningSpeed * MaxTurningSpeed)
+		{
+			AngVelocity = FVector(0.0f, 0.0f, UseMaxTurningSpeed);
+			bSetAngVelocity = true;
+		}
+		else
+		{
+			Torque += FVector(0.0f, 0.0f, UseTurningTorque);
+		}
+
+		bTurning = true;
+	}
+	
+	// Update Vehicle Rotation for Boost Mode
+	FRotator Rotation = Move.BoostRotation;
+	
+	// Update Hovering Physics
+	float VelZ = ApplyVelocity.Z;
+	ComputeHoverPhysics(GetWorld()->GetDeltaSeconds(), VelZ, ApplyForce);
+	if (bShouldHover)
+	{
+		ApplyVelocity.Z = VelZ;
+		SetVelocityComp.Z = 1;
+	}
+	
+	// Update Deceleration when not moving
+	ComputeDeceleration(GetWorld()->GetDeltaSeconds(), ApplyForce, Torque);
+
+
+	// Apply the Move on the Actor
+	FVector Vel;
+	Vel.X = (SetVelocityComp.X > 0) ? ApplyVelocity.X : MeshComp->GetPhysicsLinearVelocity().X;
+	Vel.Y = (SetVelocityComp.Y > 0) ? ApplyVelocity.Y : MeshComp->GetPhysicsLinearVelocity().Y;
+	Vel.Z = (SetVelocityComp.Z > 0) ? ApplyVelocity.Z : MeshComp->GetPhysicsLinearVelocity().Z;
+	MeshComp->SetPhysicsLinearVelocity(Vel);
+	MeshComp->AddForce(ApplyForce, NAME_None, true);
+
+	SetActorRotation(Rotation);
+
+	if (bSetAngVelocity)
+		MeshComp->SetPhysicsAngularVelocityInDegrees(AngVelocity);
+	MeshComp->AddTorqueInDegrees(Torque, NAME_None, true);
+}
+
+void ACombatVehicle::ComputeHoverPhysics(float DeltaTime, float& VelZ, FVector& Force)
 {
 	if (bShouldHover)
 	{
 		HoverTime += DeltaTime;
 
-		FVector Vel = GetVelocity();
-
-		// Damped Sin Wave
-		Vel.Z = WobbleAmplitude * FMath::Exp(-WobbleDecayConst * HoverTime) * FMath::Cos(WobbleFrequency * HoverTime) * MaxVelAchieved;
-
-		CurrTickClientMove.Velocity.Z = Vel.Z;
-		CurrTickClientMove.SetVelocityComp.Z = 1;
-		CurrTickClientMove.Force += FVector(0.0f, 0.0f, GameGravity);
+		// Update Output Parameters
+		//
+		// Damped Cosine Wave
+		VelZ = WobbleAmplitude * FMath::Exp(-WobbleDecayConst * HoverTime) * FMath::Cos(WobbleFrequency * HoverTime) * MaxVelAchieved;
+		// Pushback against Gravity
+		Force += FVector(0.0f, 0.0f, GameGravity);
 	}
 }
 
-void ACombatVehicle::Decelerate(float DeltaTime)
+void ACombatVehicle::ComputeDeceleration(float DeltaTime, FVector& Force, FVector& Torque)
 {
 	if (!bMoving)
 	{
 		FVector Acc = -GetVelocity() * DecelerateFactor;
-		CurrTickClientMove.Force += FVector(Acc.X, Acc.Y, 0.0f);
+		Force += FVector(Acc.X, Acc.Y, 0.0f);
 	}
 
 	if (!bTurning)
 	{
-		FVector Torque = -MeshComp->GetPhysicsAngularVelocityInDegrees() * DecelerateFactor;
-		CurrTickClientMove.Torque += Torque;
+		FVector AngAcc = -MeshComp->GetPhysicsAngularVelocityInDegrees() * DecelerateFactor;
+		Torque += AngAcc;
 	}
 }
 
@@ -547,7 +650,7 @@ void ACombatVehicle::UpdateBoostMode(float DeltaTime)
 	SetActorRotation(Rotation);
 
 	// Replicate Boost Mode Movement and Visuals
-	CurrTickClientMove.Rotation = Rotation;
+	CurrTickClientMove.BoostRotation = Rotation;
 	CurrTickClientVisuals.bBoostModeActive = bBoostActive;
 }
 
@@ -913,11 +1016,33 @@ void ACombatVehicle::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLi
 	Super::GetLifetimeReplicatedProps(OutLifetimeProps);
 
 	DOREPLIFETIME(ACombatVehicle, CurrentHealth);
+	DOREPLIFETIME(ACombatVehicle, ServerStats);
 }
 
 void ACombatVehicle::OnRep_CurrentHealth()
 {
 	OnHealthUpdate();
+}
+
+void ACombatVehicle::OnRep_ServerStats()
+{
+	// Handles Autonomous Proxy (Owning Client)
+	//
+
+	if (IsLocallyControlled() && GetLocalRole() == ROLE_AutonomousProxy)
+	{
+		// Client needs to Reconcile its Movement with the Server's
+		//
+
+		// Check if Location Error is Large Enough
+		FVector LocError = GetActorLocation() - ServerStats.Location;
+
+		// Reset Movement according to Server Authorized Parameters if Error exceeds Threshold
+		bShouldReconcileMovement = LocError.SizeSquared() > MaxNetPredictionError * MaxNetPredictionError;
+		
+		// Remove Acknowledged Moves
+		NetClientPredStats.RemoveAcknowledgedMoves(ServerStats.Timestamp);
+	}
 }
 
 void ACombatVehicle::RPC_Multicast_UpdateVisuals_Implementation(FNetClientVisuals NewVisuals)
@@ -965,27 +1090,16 @@ void ACombatVehicle::RPC_Server_UpdateVisuals_Implementation(FNetClientVisuals N
 	RPC_Multicast_UpdateVisuals(NewVisuals);
 }
 
-void ACombatVehicle::RPC_Server_UpdateMovement_Implementation(FNetClientPredStats NetClientPredStatsParam)
+void ACombatVehicle::RPC_Server_UpdateMovement_Implementation(FNetClientMove ClientMove)
 {
-	// Extract First Move to be Processed
-	FNetClientMove Move = NetClientPredStatsParam.ExtractMove();
-
-	/*GEngine->AddOnScreenDebugMessage(-1, 1.0f, FColor::Red,
-		FString::Printf(TEXT("[SERVER] XYVel: %d"), (int)Move.bSetVelocity));*/
-
 	// Apply the Move on the Remote Actor
-	FVector Vel;
-	Vel.X = (Move.SetVelocityComp.X > 0) ? Move.Velocity.X : MeshComp->GetPhysicsLinearVelocity().X;
-	Vel.Y = (Move.SetVelocityComp.Y > 0) ? Move.Velocity.Y : MeshComp->GetPhysicsLinearVelocity().Y;
-	Vel.Z = (Move.SetVelocityComp.Z > 0) ? Move.Velocity.Z : MeshComp->GetPhysicsLinearVelocity().Z;
-	MeshComp->SetPhysicsLinearVelocity(Vel);
-	MeshComp->AddForce(Move.Force, NAME_None, true);
+	UpdateMovement(ClientMove);
 
-	SetActorRotation(Move.Rotation);
-
-	if (Move.bSetAngVelocity)
-		MeshComp->SetPhysicsAngularVelocityInDegrees(Move.AngVelocity);
-	MeshComp->AddTorqueInDegrees(Move.Torque, NAME_None, true);
+	// Update Server Stats (Replicated Property)
+	ServerStats.Location = GetActorLocation();
+	ServerStats.Rotation = GetActorRotation();
+	ServerStats.Velocity = GetVelocity();
+	ServerStats.Timestamp = ClientMove.Timestamp;
 }
 
 void ACombatVehicle::RPC_Multicast_SpawnDecal_Implementation(FVector Location, FRotator Rotation, FVector DecalTexSize)
