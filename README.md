@@ -25,7 +25,7 @@ You can click on the Image to watch the Gameplay video.
 
 - **Networked Combat**
   - Projectile-based shooting system with network prediction via Gameplay Ability System (GAS).
-  - Based on Sam Reitich's [Article on Projectile Prediction](https://sreitich.github.io/projectile-prediction-1/)).
+  - Based on Sam Reitich's [Article on Projectile Prediction](https://sreitich.github.io/projectile-prediction-1/).
   - Written in C++.
 
 - **Procedural City Generation**
